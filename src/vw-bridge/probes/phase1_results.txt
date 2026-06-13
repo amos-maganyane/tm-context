@@ -1,0 +1,234 @@
+=== VW WIDGET PROBE v4 ===
+
+Version: VisualWorks®, 9.3.1 of August 16, 2023
+
+
+
+--- KEY GLOBALS (+ found / - missing, multi-namespace lookup) ---
+
+  + ScheduledControllers
+
+  + ControlManager
+
+  + ApplicationModel
+
+  + UIBuilder
+
+  + SpecWrapper
+
+  + WidgetWrapper
+
+  + BoundedWrapper
+
+  - Socket
+
+  + SocketAccessor
+
+  - OSSocketAccessor
+
+  - SpOpStream
+
+  + IPSocketAddress
+
+  - SimpleHTTPClient
+
+  - HTTPServer
+
+  - HttpServer
+
+  - UIProcess
+
+  - WorldState
+
+  - UUID
+
+  - UUIDGenerator
+
+  + Filename
+
+  + Semaphore
+
+  + Processor
+
+  + Transcript
+
+  + Time
+
+  + Delay
+
+  + Random
+
+
+
+--- SELECTOR CHECKS, instance side ---
+
+  - String>>formatWith:
+
+  - String>>bindWith:
+
+  - String>>bindWithArguments:
+
+  + String>>expandMacrosWithArguments:
+
+  - String>>subStrings:
+
+  + String>>tokensBasedOn:
+
+  + String>>copyReplaceAll:with:
+
+  + String>>asFilename
+
+  + OrderedCollection>>do:separatedBy:
+
+  + Array>>doWithIndex:
+
+  + Array>>keysAndValuesDo:
+
+  + BlockClosure>>fork
+
+  + BlockClosure>>forkAt:
+
+  - Semaphore>>waitTimeoutMSecs:
+
+  - Semaphore>>waitTimeoutMilliseconds:
+
+  - Semaphore>>waitTimeoutSeconds:
+
+  + Process>>interruptWith:
+
+  + SocketAccessor>>accept
+
+  + SocketAccessor>>listenFor:
+
+  + SocketAccessor>>bindTo:
+
+  + SocketAccessor>>readAppendStream
+
+  - SocketAccessor>>readWriteStream
+
+  + SocketAccessor>>readStream
+
+  + SocketAccessor>>writeStream
+
+
+
+--- SELECTOR CHECKS, class side ---
+
+  + SocketAccessor class>>newTCPserverAtPort:
+
+  + SocketAccessor class>>newTCPclientToHost:port:
+
+  - UUID class>>new
+
+  - UUIDGenerator class>>next
+
+  + Delay class>>forMilliseconds:
+
+  + Time class>>millisecondClockValue
+
+
+
+--- PROCESSOR PRIORITIES ---
+
+  + Processor userBackgroundPriority
+
+  + Processor userSchedulingPriority
+
+  activePriority = 50
+
+
+
+--- OPEN WINDOWS ---
+
+  window count: 3
+
+  [1] 'GemStone Launcher'
+
+      view=ScheduledWindow ctrlModel=GbxVisualLauncher viewApp=GbxVisualLauncher
+
+      bounds=894 @ 50 corner: 1365 @ 385
+
+  [2] 'storedev64 (C:\visualworks931\image)'
+
+      view=ScheduledWindow ctrlModel=VisualLauncher viewApp=VisualLauncher
+
+      bounds=135 @ 53 corner: 890 @ 257
+
+  [3] an UserMessage('Workspace', #Workspace, #labels)
+
+      view=ScheduledWindow ctrlModel=Workbook viewApp=Workbook
+
+      bounds=403 @ 194 corner: 1431 @ 594
+
+
+
+--- WIDGET TREES (every window with a builder) ---
+
+  [1] 'GemStone Launcher' - 22 named components (app=GbxVisualLauncher)
+
+      #addWidget spec=ActionButtonSpec widget=ActionButtonView label='Add...' value=false
+
+      #TranModeLabel2 spec=LabelSpec widget=PassiveLabel label='Mode:' value=?
+
+      #loginLnkWidget spec=ActionButtonSpec widget=ActionButtonView label='Login Link' value=false
+
+      #loginRpcWidget spec=ActionButtonSpec widget=ActionButtonView label='Login RPC' value=false
+
+      #abortWidget spec=ActionButtonSpec widget=ActionButtonView label='Abort' value=false
+
+      #copyWidget spec=ActionButtonSpec widget=ActionButtonView label='Copy' value=false
+
+      #removeWidget spec=ActionButtonSpec widget=ActionButtonView label='Delete' value=false
+
+      #editWidget spec=ActionButtonSpec widget=ActionButtonView label='Edit...' value=false
+
+      #beginWidget spec=ActionButtonSpec widget=ActionButtonView label='Begin' value=false
+
+      #toolBar spec=? widget=ToolBarView label=? value=?
+
+      #logoutWidget spec=ActionButtonSpec widget=ActionButtonView label='Logout' value=false
+
+      #autoWidget spec=RadioButtonSpec widget=RadioButtonView label='auto' value=nil
+
+      #manualWidget spec=RadioButtonSpec widget=RadioButtonView label='manual' value=nil
+
+      #Splitter spec=ResizingSplitterSpec widget=ResizingSplitterView label=nil value=nil
+
+      #sessionListWidget spec=SequenceViewSpec widget=SequenceView label=nil value=List ()
+
+      #commitWidget spec=ActionButtonSpec widget=ActionButtonView label='Commit' value=false
+
+      #TranModeLabel1 spec=LabelSpec widget=PassiveLabel label='Transaction' value=?
+
+      #ParametersBox spec=GroupBoxSpec widget=GroupBox label='Session Parameters' value=?
+
+      #SessionsBox spec=GroupBoxSpec widget=GroupBox label='Sessions' value=?
+
+      #breakWidget spec=ActionButtonSpec widget=ActionButtonView label='Break' value=false
+
+      #currentWidget spec=ActionButtonSpec widget=ActionButtonView label='Current' value=false
+
+      #parametersListWidget spec=SequenceViewSpec widget=SequenceView label=nil value=List ('x' on 'development64' @ 'invgemdev101' 'pipsuper' ...
+
+  [2] 'storedev64 (C:\visualworks931\image)' - 3 named components (app=VisualLauncher)
+
+      #statusBar spec=SubCanvasSpec widget=ToolBarView label=nil value=?
+
+      #transcript spec=SubCanvasSpec widget=CompositePart label=nil value=?
+
+      #launcherToolBar spec=? widget=ToolBarView label=? value=?
+
+  [3] an UserMessage('Workspace', #Workspace, #labels) - 4 named components (app=Workbook)
+
+      #importSummary spec=InputFieldSpec widget=InputFieldView label=nil value='All'
+
+      #pageExplanation spec=InputFieldSpec widget=InputFieldView label=nil value='Text or Smalltalk code'
+
+      #toolbarHolder spec=? widget=ToolBarView label=? value=?
+
+      #pages spec=TabControlSpec widget=TabControlComposite label=nil value=?
+
+
+
+=== PROBE DONE ===
+
