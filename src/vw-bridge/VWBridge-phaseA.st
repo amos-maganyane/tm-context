@@ -1,8 +1,8 @@
-"=== VWBridge Phase A v0.6 - Interaction Endpoints ===
- Extended HTTP parsing (headers + body), Bearer token enforcement,
- POST /click, POST /type, GET /value, POST /screenshot.
- All widget ops go through onUIDo: with Delay watchdog.
- Feature-detected APIs - each risky call wrapped in error handlers."
+"=== VWBridge Phase A v0.6 - Interaction Endpoints ==="
+"Extended HTTP parsing (headers + body), Bearer token enforcement,"
+"POST /click, POST /type, GET /value, POST /screenshot."
+"All widget ops go through onUIDo: with Delay watchdog."
+"Feature-detected APIs - each risky call wrapped in error handlers."
 
 !VWBridge methodsFor: 'networking'!
 
