@@ -1,8 +1,8 @@
-"=== VWBridge Phase A v0.6 — Interaction Endpoints ===
+"=== VWBridge Phase A v0.6 - Interaction Endpoints ===
  Extended HTTP parsing (headers + body), Bearer token enforcement,
  POST /click, POST /type, GET /value, POST /screenshot.
  All widget ops go through onUIDo: with Delay watchdog.
- Feature-detected APIs — each risky call wrapped in error handlers."
+ Feature-detected APIs - each risky call wrapped in error handlers."
 
 !VWBridge methodsFor: 'networking'!
 
@@ -378,7 +378,7 @@ handleScreenshot: bodyString
 				encoded == false ifTrue: [
 					'{"error":"no_png_encoder","message":"No PNG encoding class found (tried PNGReadWriter, ImageReadWriter)"}'
 				] ifFalse: [
-					stream contents  "returns ByteArray — caller will base64 encode" ]]]].
+					stream contents  "returns ByteArray - caller will base64 encode" ]]]].
 	result == nil ifTrue: [
 		^self httpResponse: 500 type: 'application/json' body: '{"error":"ui_timeout"}'].
 	(result isKindOf: Core.String) ifTrue: [
@@ -391,7 +391,7 @@ handleScreenshot: bodyString
 !VWBridge methodsFor: 'base64'!
 
 base64Encode: aByteArray
-	"Manual base64 encoding — no library dependency. Handles any ByteArray."
+	"Manual base64 encoding - no library dependency. Handles any ByteArray."
 	| alphabet out i b |
 	alphabet := 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.
 	out := Core.WriteStream on: Core.String new.
@@ -421,7 +421,7 @@ base64Encode: aByteArray
 !VWBridge methodsFor: 'json'!
 
 jsonParse: aString
-	"Minimal JSON parser — handles flat string-keyed objects,
+	"Minimal JSON parser - handles flat string-keyed objects,
 	 strings, numbers, booleans, null. Returns a Dictionary or nil on error.
 	 Does NOT handle nested objects or arrays (not needed for our bodies)."
 	| out pos |
