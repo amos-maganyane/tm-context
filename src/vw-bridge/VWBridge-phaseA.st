@@ -64,7 +64,7 @@ readHeadersFrom: aStream
 validateRequest: requestLine headers: headers
 	"Check Bearer token. Return nil if valid, or an error response string if invalid.
 	 /health is allowed without token for liveness checks."
-	| parts path tokenHeader |
+	| parts path tokenHeader providedToken |
 	parts := self split: requestLine on: (Core.Character value: 32).
 	parts size < 2 ifTrue: [^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
 	path := parts at: 2.
@@ -76,7 +76,6 @@ validateRequest: requestLine headers: headers
 		^self httpResponse: 401 type: 'application/json' body: '{"error":"unauthorized","message":"Missing Authorization header"}'].
 	(tokenHeader beginsWith: 'Bearer ') ifFalse: [
 		^self httpResponse: 401 type: 'application/json' body: '{"error":"unauthorized","message":"Authorization must be Bearer <token>"}'].
-	| providedToken |
 	providedToken := tokenHeader copyFrom: 8 to: tokenHeader size.
 	providedToken = token ifFalse: [
 		^self httpResponse: 401 type: 'application/json' body: '{"error":"unauthorized","message":"Invalid token"}'].
@@ -190,9 +189,12 @@ handleClick: bodyString
 			specAction == nil ifTrue: [
 				'{"error":"no_action","message":"Widget ' , aspect , ' has no action selector"}'
 			] ifFalse: [
-				[app perform: specAction] on: self errorClass do: [:ex |
+				| actionErr |
+				actionErr := [app perform: specAction. nil] on: self errorClass do: [:ex |
 					'{"error":"action_failed","message":"perform ' , specAction asString , ' failed: ' , ex description , '"}' ].
-				'{"ok":true,"action":"' , aspect , '","performed":"' , specAction asString , '"}' ]]].
+				actionErr ~~ nil
+					ifTrue: [actionErr]
+					ifFalse: ['{"ok":true,"action":"' , aspect , '","performed":"' , specAction asString , '"}' ]]]].
 	result == nil ifTrue: [result := '{"error":"ui_timeout","message":"UI process did not respond"}'].
 	(result beginsWith: '{"ok":') ifTrue: [
 		^self httpResponse: 200 type: 'application/json' body: result]
@@ -271,8 +273,7 @@ handleSetValue: path body: bodyString
 	"PUT /value?aspect=X&windowTitle=Y
 	 Body: {""value"": ""new text""}
 	 Sets ValueHolder value directly."
-	| aspect windowTitle bodyDict value result |
-	| queryString idx |
+	| aspect windowTitle bodyDict value result queryString idx |
 	queryString := ''.
 	idx := path indexOf: $?.
 	idx > 0 ifTrue: [queryString := path copyFrom: idx + 1 to: path size].
@@ -320,9 +321,9 @@ queryParam: paramName from: queryString
 handleScreenshot: bodyString
 	"POST /screenshot
 	 Body: {""scope"": ""screen""} or {""scope"": ""window"", ""windowTitle"": ""X""}
-	 Returns PNG bytes (binary) with Content-Type: image/png.
-	 Feature-detects Display + PNG encoding. Falls back to base64 JSON on failure."
-	| bodyDict scope windowTitle result pngBytes |
+	 Returns base64-encoded PNG in JSON: {""ok"":true,""screenshot"":""<base64>""}.
+	 Feature-detects Display + PNG encoding."
+	| bodyDict scope windowTitle result pngBytes b64 |
 	bodyDict := bodyString isEmpty
 		ifTrue: [Core.Dictionary new]
 		ifFalse: [self jsonParse: bodyString].
@@ -384,7 +385,6 @@ handleScreenshot: bodyString
 		^self httpResponse: 500 type: 'application/json' body: result].
 	"result is a ByteArray with PNG bytes"
 	pngBytes := result.
-	| b64 |
 	b64 := self base64Encode: pngBytes.
 	^self httpResponse: 200 type: 'application/json' body: '{"ok":true,"screenshot":"' , b64 , '"}'! !
 
