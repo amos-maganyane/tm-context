@@ -1,522 +1,481 @@
-"First, define the VWBridge class"
-Object subclass: 'VWBridge'
-    instVarNames: #(token)
-    classVars: #()
-    classInstVars: #()
-    poolDictionaries: #()
-    inDictionary: UserGlobals
-    category: 'VWBridge'
+"=== VW Widget Bridge Phase A v0.7 -- adds /click /type /value endpoints ===
+ PREREQ:  VWBridge.st (v0.5) must already be filed in - defines the VWBridge class.
+ INSTALL: Launcher -> File Browser -> this file -> File In.
+          The file-in restarts the bridge automatically to pick up the new methods.
+ NEW ENDPOINTS (all require  Authorization: Bearer <token>  except /health):
+   GET  /value?aspect=X&windowTitle=Y     read widget current value
+   POST /click    body: {""aspect"":""X"",""windowTitle"":""Y""}
+                  fires  wrapper widget model value: true  (PluggableAdaptor
+                  triggers the configured action callback in its setter block).
+   POST /type     body: {""aspect"":""X"",""value"":""hello"",""windowTitle"":""Y""}
+                  sets   wrapper widget model value: newValue
+   PUT  /value?aspect=X&windowTitle=Y    body: {""value"":""new""}
+                  alternative to POST /type
+ TOKEN:  printed in the Transcript at startup. Required on every non-/health request.
+ PROBE-CONFIRMED DESIGN NOTES (storedev64, phaseA_results.txt):
+   - spec action returns nil for ActionButtonSpec in this image -> we DO NOT
+     try app perform: spec action. We fire via the model adaptor instead.
+   - widget model is a PluggableAdaptor for buttons / ValueHolder for inputs.
+     Both respond to value: -- one click strategy covers both surfaces.
+   - JSON parser uses a 1-element-Array cursor (VW forbids assigning to method args).
+   - All namespace refs qualified (Root.Smalltalk, Core.*) for this GBS image.
+   - Replaces v0.5 serve:/dispatch: to add HTTP headers + body + auth.
+   - Screenshot NOT included: probe shows Display has no boundingBox, no PNG
+     encoder, no Base64 class. Defer to Phase B."!
+
+!VWBridge methodsFor: 'helpers'!
+
+beginsWithIgnoreCase: aString prefix: aPrefix
+	"Case-insensitive prefix match. Returns true if aString starts with aPrefix."
+	| s p |
+	aString == nil ifTrue: [^false].
+	s := aString asString.
+	p := aPrefix asString.
+	s size < p size ifTrue: [^false].
+	^(s copyFrom: 1 to: p size) asLowercase = p asLowercase! !
 
 !VWBridge methodsFor: 'networking'!
 
 serve: aConnection
-    "Read full HTTP request: request line, headers, body. Validate
-     auth token. Dispatch to handler. Write response."
-    | stream requestLine headers body contentTypeLen bodyString response |
-    stream := self streamFor: aConnection.
-    stream == nil ifTrue: [
-        [aConnection close] on: self errorClass do: [:ex | nil].
-        ^self].
-    [stream lineEndTransparent] on: self errorClass do: [:ex | nil].
-    requestLine := [self readRequestLineFrom: stream] on: self errorClass do: [:ex | String new].
-    requestLine isEmpty ifTrue: [
-        response := self httpResponse: 400 type: 'text/plain' body: 'Bad Request'.
-        [stream nextPutAll: response] on: self errorClass do: [:ex | nil].
-        self flushStream: stream.
-        [stream close] on: self errorClass do: [:ex | nil].
-        [aConnection close] on: self errorClass do: [:ex | nil].
-        ^self].
-    headers := self readHeadersFrom: stream.
-    bodyString := String new.
-    contentTypeLen := headers at: 'content-length' ifAbsent: [nil].
-    contentTypeLen == nil ifTrue: [contentTypeLen := headers at: 'Content-Length' ifAbsent: [nil]].
-    contentTypeLen ~~ nil ifTrue: [
-        | len |
-        len := [contentTypeLen asNumber] on: self errorClass do: [:ex | 0].
-        len > 0 ifTrue: [
-            bodyString := [stream next: len] on: self errorClass do: [:ex | String new]].
-        bodyString == nil ifTrue: [bodyString := String new]].
-    response := self dispatch: requestLine headers: headers body: bodyString.
-    [stream nextPutAll: response] on: self errorClass do: [:ex | nil].
-    self flushStream: stream.
-    [stream close] on: self errorClass do: [:ex | nil].
-    [aConnection close] on: self errorClass do: [:ex | nil]!
+	"Phase A: full HTTP read (request line + headers + body) + auth + dispatch.
+	 Replaces v0.5 single-line serve:."
+	| stream requestLine headers bodyLen bodyString response err |
+	err := self errorClass.
+	stream := self streamFor: aConnection.
+	stream == nil ifTrue: [
+		[aConnection close] on: err do: [:ex | nil].
+		^self].
+	[stream lineEndTransparent] on: err do: [:ex | nil].
+	requestLine := [self readRequestLineFrom: stream] on: err do: [:ex | ''].
+	requestLine isEmpty ifTrue: [
+		response := self httpResponse: 400 type: 'text/plain' body: 'Bad Request'.
+		[stream nextPutAll: response] on: err do: [:ex | nil].
+		self flushStream: stream.
+		[stream close] on: err do: [:ex | nil].
+		[aConnection close] on: err do: [:ex | nil].
+		^self].
+	headers := [self readHeadersFrom: stream] on: err do: [:ex | Core.Dictionary new].
+	bodyString := ''.
+	bodyLen := headers at: 'content-length' ifAbsent: [nil].
+	bodyLen ~~ nil ifTrue: [
+		| n |
+		n := [bodyLen asNumber] on: err do: [:ex | 0].
+		n > 0 ifTrue: [
+			bodyString := [stream next: n] on: err do: [:ex | ''].
+			bodyString == nil ifTrue: [bodyString := '']]].
+	response := [self dispatch: requestLine headers: headers body: bodyString]
+		on: err do: [:ex |
+			self httpResponse: 500 type: 'application/json'
+				body: '{"error":"internal","message":"' , ex description , '"}'].
+	[stream nextPutAll: response] on: err do: [:ex | nil].
+	self flushStream: stream.
+	[stream close] on: err do: [:ex | nil].
+	[aConnection close] on: err do: [:ex | nil]!
 
 readHeadersFrom: aStream
-    "Read HTTP headers until blank line. Return a Dictionary
-     with lowercase keys."
-    | headers line colonPos key value |
-    headers := Dictionary new.
-    [true] whileTrue: [
-        line := [aStream upTo: (Character value: 10)] on: self errorClass do: [:ex | String new].
-        (line isEmpty or: [line = String cr or: [line size = 1 and: [line first = (Character value: 10)]]])
-            ifTrue: [^headers].
-        [line isEmpty not and: [line last asInteger = 13]] whileTrue: [
-            line := line copyFrom: 1 to: line size - 1].
-        colonPos := line indexOf: $:.
-        colonPos > 0 ifTrue: [
-            key := (line copyFrom: 1 to: colonPos - 1) asLowercase.
-            value := line copyFrom: colonPos + 1 to: line size.
-            [value first = (Character value: 32)] whileTrue: [
-                value := value copyFrom: 2 to: value size].
-            headers at: key put: value]].
-    ^headers!
+	"Read HTTP headers until blank line. Lowercased keys."
+	| headers line colonPos key value err |
+	err := self errorClass.
+	headers := Core.Dictionary new.
+	[true] whileTrue: [
+		line := [aStream upTo: (Core.Character value: 10)] on: err do: [:ex | nil].
+		line == nil ifTrue: [^headers].
+		[line isEmpty not and: [line last asInteger = 13]] whileTrue: [
+			line := line copyFrom: 1 to: line size - 1].
+		line isEmpty ifTrue: [^headers].
+		colonPos := line indexOf: $:.
+		colonPos > 0 ifTrue: [
+			key := (line copyFrom: 1 to: colonPos - 1) asLowercase.
+			value := line copyFrom: colonPos + 1 to: line size.
+			[value isEmpty not and: [value first = (Core.Character value: 32)]] whileTrue: [
+				value := value copyFrom: 2 to: value size].
+			headers at: key put: value]].
+	^headers! !
 
 !VWBridge methodsFor: 'auth'!
 
-validateRequest: requestLine headers: headers
-    "Check Bearer token. Return nil if valid, or an error response string if invalid.
-     /health is allowed without token for liveness checks."
-    | parts path tokenHeader providedToken |
-    parts := self split: requestLine on: (Character value: 32).
-    parts size < 2 ifTrue: [^self httpResponse: 400 type: 'application/json' body: '{"error": "bad_request"}'].
-    path := parts at: 2.
-    path = '/health' ifTrue: [^nil].
-    path = '/favicon.ico' ifTrue: [^nil].
-    tokenHeader := headers at: 'authorization' ifAbsent: [
-        headers at: 'Authorization' ifAbsent: [nil]].
-    tokenHeader == nil ifTrue: [
-        ^self httpResponse: 401 type: 'application/json' body: '{"error": "unauthorized", "message": "Missing Authorization header"}'].
-    (tokenHeader beginsWith: 'Bearer ') ifFalse: [
-        ^self httpResponse: 401 type: 'application/json' body: '{"error": "unauthorized", "message": "Authorization must be Bearer <token>"}'].
-    providedToken := tokenHeader copyFrom: 8 to: tokenHeader size.
-    providedToken = token ifFalse: [
-        ^self httpResponse: 401 type: 'application/json' body: '{"error": "unauthorized", "message": "Invalid token"}'].
-    ^nil!
+authError: requestLine headers: headers
+	"Returns nil if auth passes (or path is exempt). Otherwise returns an HTTP
+	 response string to short-circuit the dispatcher."
+	| parts path tokenHeader provided |
+	parts := self split: requestLine on: (Core.Character value: 32).
+	parts size < 2 ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
+	path := parts at: 2.
+	(path includes: $?) ifTrue: [path := path copyFrom: 1 to: (path indexOf: $?) - 1].
+	(path = '/health' or: [path = '/favicon.ico']) ifTrue: [^nil].
+	tokenHeader := headers at: 'authorization' ifAbsent: [nil].
+	tokenHeader == nil ifTrue: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Missing Authorization header"}'].
+	(self beginsWithIgnoreCase: tokenHeader prefix: 'Bearer ') ifFalse: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Expected Bearer <token>"}'].
+	provided := tokenHeader copyFrom: 8 to: tokenHeader size.
+	provided = token ifFalse: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Invalid token"}'].
+	^nil! !
 
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-    "Route request to handler. Handles GET + POST + PUT.
-     Token validated before routing (except /health)."
-    | parts method path authError |
-    authError := self validateRequest: requestLine headers: headers.
-    authError ~~ nil ifTrue: [^authError].
-    parts := self split: requestLine on: (Character value: 32).
-    parts size < 2 ifTrue: [^self httpResponse: 400 type: 'text/plain' body: 'Bad Request'].
-    method := parts at: 1.
-    path := parts at: 2.
-    "--- GET endpoints ---"
-    method = 'GET' ifTrue: [
-        path = '/health' ifTrue: [
-            ^self httpResponse: 200 type: 'application/json' body: '{"status": "ok", "version": "0.6"}'].
-        path = '/windows' ifTrue: [^self handleWindows].
-        path = '/windows/tree' ifTrue: [^self handleTree].
-        (path beginsWith: '/value') ifTrue: [^self handleGetValue: path].
-        ^self httpResponse: 404 type: 'application/json' body: '{"error": "not_found", "message": "Unknown GET ' , path , '"}' ].
-    "--- POST endpoints ---"
-    method = 'POST' ifTrue: [
-        path = '/click' ifTrue: [^self handleClick: bodyString].
-        path = '/type'  ifTrue: [^self handleType: bodyString].
-        path = '/screenshot' ifTrue: [^self handleScreenshot: bodyString].
-        ^self httpResponse: 404 type: 'application/json' body: '{"error": "not_found", "message": "Unknown POST ' , path , '"}' ].
-    "--- PUT endpoints ---"
-    method = 'PUT' ifTrue: [
-        (path beginsWith: '/value') ifTrue: [^self handleSetValue: path body: bodyString].
-        ^self httpResponse: 404 type: 'application/json' body: '{"error": "not_found", "message": "Unknown PUT ' , path , '"}' ].
-    "--- OPTIONS (CORS preflight) ---"
-    method = 'OPTIONS' ifTrue: [
-        ^self httpResponse: 200 type: 'text/plain' body: ''].
-    ^self httpResponse: 405 type: 'application/json' body: '{"error": "method_not_allowed", "message": "Method ' , method , ' not supported"}'!
+	"Phase A dispatcher. Auth gate + method/path routing (GET, POST, PUT, OPTIONS)."
+	| parts method path queryString authResp |
+	authResp := self authError: requestLine headers: headers.
+	authResp ~~ nil ifTrue: [^authResp].
+	parts := self split: requestLine on: (Core.Character value: 32).
+	parts size < 2 ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
+	method := parts at: 1.
+	path := parts at: 2.
+	queryString := ''.
+	(path includes: $?) ifTrue: [
+		| qi |
+		qi := path indexOf: $?.
+		queryString := path copyFrom: qi + 1 to: path size.
+		path := path copyFrom: 1 to: qi - 1].
+	method = 'GET' ifTrue: [
+		path = '/health' ifTrue: [
+			^self httpResponse: 200 type: 'application/json'
+				body: '{"status":"ok","version":"0.7"}'].
+		path = '/windows' ifTrue: [^self handleWindows].
+		path = '/windows/tree' ifTrue: [^self handleTree].
+		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'POST' ifTrue: [
+		path = '/click' ifTrue: [^self handleClickBody: bodyString].
+		path = '/type'  ifTrue: [^self handleTypeBody: bodyString].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'PUT' ifTrue: [
+		path = '/value' ifTrue: [^self handlePutValueQuery: queryString body: bodyString].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'OPTIONS' ifTrue: [
+		^self httpResponse: 200 type: 'text/plain' body: ''].
+	^self httpResponse: 405 type: 'application/json'
+		body: '{"error":"method_not_allowed","method":"' , method , '"}'!
 
-resolveWidget: aspectName inWindow: windowTitle appClass: appClass
-    "Find a widget by aspect name in a window matching title substring
-     or appClass. Returns {appModel. widgetWrapper. errorJSON} where
-     exactly one of {widgetWrapper. errorJSON} is non-nil.
-     Must be called on UI process."
-    | mgr err |
-    err := self errorClass.
-    mgr := self globalNamed: #ScheduledControllers.
-    mgr == nil ifTrue: [^Array with: nil with: nil with: '{"error": "no_scheduled_controllers"}'].
-    ([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
-        | app modelTitle matchesTitle matchesClass builderOK |
-        app := self applicationFor: ctrl.
-        builderOK := app ~~ nil and: [([app builder] on: err do: [:ex | nil]) ~~ nil].
-        builderOK ifTrue: [
-            modelTitle := [ctrl view label asString] on: err do: [:ex | nil].
-            matchesTitle := windowTitle == nil
-                ifTrue: [true]
-                ifFalse: [
-                    modelTitle ~~ nil and: [
-                        [(modelTitle indexOfSubCollection: windowTitle startingAt: 1) > 0]
-                            on: err do: [:ex | false]]].
-            matchesClass := appClass == nil
-                ifTrue: [true]
-                ifFalse: [app class name asString = appClass].
-            (matchesTitle and: [matchesClass]) ifTrue: [
-                | builder comps wrapper sym |
-                builder := [app builder] on: err do: [:ex | nil].
-                comps := [builder namedComponents] on: err do: [:ex | nil].
-                comps == nil ifTrue: [^Array with: nil with: nil with: '{"error": "no_named_components"}'].
-                "Try symbol key first"
-                sym := [Symbol intern: aspectName] on: err do: [:ex | nil].
-                wrapper := sym == nil ifTrue: [nil] ifFalse: [comps at: sym ifAbsent: [nil]].
-                "Fall back to string key"
-                wrapper == nil ifTrue: [
-                    wrapper := comps at: aspectName ifAbsent: [nil]].
-                "Fall back to label matching"
-                wrapper == nil ifTrue: [
-                    comps keysAndValuesDo: [:k :w |
-                        (wrapper == nil and: [[w spec label asString = aspectName] on: err do: [:ex | false]])
-                            ifTrue: [wrapper := w]]].
-                wrapper == nil
-                    ifTrue: [^Array with: nil with: nil with: '{"error": "widget_not_found", "aspect": "' , aspectName , '"}' ]
-                    ifFalse: [^Array with: app with: wrapper with: nil]]]].
-    ^Array with: nil with: nil with: '{"error": "window_not_found", "title": "' , (windowTitle == nil ifTrue: ['?'] ifFalse: [windowTitle]) , '"}'!
+dispatch: requestLine
+	"Compatibility shim: v0.5 single-arg dispatch routes through Phase A with
+	 empty headers/body. Kept so any old caller still works."
+	^self dispatch: requestLine headers: Core.Dictionary new body: ''! !
 
 !VWBridge methodsFor: 'interaction'!
 
-handleClick: bodyString
-    "POST /click
-     Body: {""aspect"": ""loginRpcWidget"", ""windowTitle"": ""GemStone Launcher""}
-     Action: resolve widget, call ApplicationModel>>perform: specAction on UI process."
-    | bodyDict aspect windowTitle result |
-    bodyDict := self jsonParse: bodyString.
-    bodyDict == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "invalid_json", "message": "Could not parse request body"}'].
-    aspect := bodyDict at: 'aspect' ifAbsent: [
-        bodyDict at: 'label' ifAbsent: [nil]].
-    aspect == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "missing_aspect", "message": "Body must include aspect or label"}'].
-    windowTitle := bodyDict at: 'windowTitle' ifAbsent: [
-        bodyDict at: 'window' ifAbsent: [nil]].
-    result := self onUIDo: [
-        | resolve |
-        resolve := self resolveWidget: aspect inWindow: windowTitle appClass: nil.
-        (resolve at: 3) ~~ nil ifTrue: [resolve at: 3]  "error"
-        ifFalse: [
-            | app wrapper specAction |
-            app := resolve at: 1.
-            wrapper := resolve at: 2.
-            specAction := [wrapper spec action] on: self errorClass do: [:ex | nil].
-            specAction == nil ifTrue: [
-                '{"error": "no_action", "message": "Widget ' , aspect , ' has no action selector"}'
-            ] ifFalse: [
-                | actionErr |
-                actionErr := [app perform: specAction. nil] on: self errorClass do: [:ex |
-                    '{"error": "action_failed", "message": "perform ' , specAction asString , ' failed: ' , ex description , '"}' ].
-                actionErr ~~ nil
-                    ifTrue: [actionErr]
-                    ifFalse: ['{"ok": true, "action": "' , aspect , '", "performed": "' , specAction asString , '"}' ]]]].
-    result == nil ifTrue: [result := '{"error": "ui_timeout", "message": "UI process did not respond"}'].
-    (result beginsWith: '{"ok": ') ifTrue: [
-        ^self httpResponse: 200 type: 'application/json' body: result]
-    ifFalse: [
-        ^self httpResponse: 400 type: 'application/json' body: result]!
+resolveAspect: aspectName inWindowMatching: titleSubstring
+	"Locate {appModel, widgetWrapper} by aspect name. titleSubstring nil = any window.
+	 Returns Core.Array {app. wrapper. errorJSON}. Exactly one of {wrapper, errorJSON} non-nil.
+	 Must be called on the UI process."
+	| mgr err found |
+	err := self errorClass.
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [
+		^Core.Array with: nil with: nil with: '{"error":"no_scheduled_controllers"}'].
+	found := nil.
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
+		| app builder comps title titleOK wrapper aspectSym |
+		found == nil ifTrue: [
+			app := [ctrl model] on: err do: [:ex | nil].
+			(app == nil or: [([app builder] on: err do: [:ex | nil]) == nil]) ifTrue: [
+				app := [ctrl view application] on: err do: [:ex | nil]].
+			builder := app == nil ifTrue: [nil] ifFalse: [[app builder] on: err do: [:ex | nil]].
+			builder ~~ nil ifTrue: [
+				title := [ctrl view label asString] on: err do: [:ex | ''].
+				titleOK := titleSubstring == nil
+					or: [(title indexOfSubCollection: titleSubstring startingAt: 1) > 0].
+				titleOK ifTrue: [
+					comps := [builder namedComponents] on: err do: [:ex | nil].
+					comps ~~ nil ifTrue: [
+						aspectSym := [aspectName asSymbol] on: err do: [:ex | nil].
+						aspectSym ~~ nil ifTrue: [
+							wrapper := comps at: aspectSym ifAbsent: [nil]].
+						wrapper == nil ifTrue: [
+							wrapper := comps at: aspectName ifAbsent: [nil]].
+						wrapper == nil ifTrue: [
+							comps valuesDo: [:w |
+								wrapper == nil ifTrue: [
+									([w spec label asString = aspectName] on: err do: [:ex | false])
+										ifTrue: [wrapper := w]]]].
+						wrapper ~~ nil ifTrue: [
+							found := Core.Array with: app with: wrapper with: nil]]]]]].
+	found ~~ nil ifTrue: [^found].
+	^Core.Array with: nil with: nil
+		with: '{"error":"widget_not_found","aspect":"' , aspectName , '"}'!
 
-handleType: bodyString
-    "POST /type
-     Body: {""aspect"": ""pageExplanation"", ""windowTitle"": ""Workspace"", ""value"": ""hello""}
-     Action: set ValueHolder value directly on UI process.
-     Also handles direct value set without specifying window (uses first match)."
-    | bodyDict aspect windowTitle value result |
-    bodyDict := self jsonParse: bodyString.
-    bodyDict == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "invalid_json", "message": "Could not parse request body"}'].
-    aspect := bodyDict at: 'aspect' ifAbsent: [nil].
-    aspect == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "missing_aspect", "message": "Body must include aspect"}'].
-    windowTitle := bodyDict at: 'windowTitle' ifAbsent: [bodyDict at: 'window' ifAbsent: [nil]].
-    value := bodyDict at: 'value' ifAbsent: [bodyDict at: 'text' ifAbsent: [nil]].
-    value == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "missing_value", "message": "Body must include value or text"}'].
-    result := self onUIDo: [
-        | resolve |
-        resolve := self resolveWidget: aspect inWindow: windowTitle appClass: nil.
-        (resolve at: 3) ~~ nil ifTrue: [resolve at: 3]
-        ifFalse: [
-            | wrapper model |
-            wrapper := resolve at: 2.
-            model := [wrapper widget model] on: self errorClass do: [:ex | nil].
-            model == nil ifTrue: [
-                '{"error": "no_model", "message": "Widget ' , aspect , ' has no model/value holder"}'
-            ] ifFalse: [
-                [model value: value] on: self errorClass do: [:ex |
-                    '{"error": "set_failed", "message": "Cannot set value: ' , ex description , '"}' ].
-                '{"ok": true, "aspect": "' , aspect , '", "value": "' , value , '"}' ]]].
-    result == nil ifTrue: [result := '{"error": "ui_timeout", "message": "UI process did not respond"}'].
-    (result beginsWith: '{"ok": ') ifTrue: [
-        ^self httpResponse: 200 type: 'application/json' body: result]
-    ifFalse: [
-        ^self httpResponse: 400 type: 'application/json' body: result]!
+handleClickBody: bodyString
+	"POST /click  -- invokes the widget's spec action on the application."
+	| dict aspect winTitle outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	aspect := dict at: 'aspect' ifAbsent: [nil].
+	aspect == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"missing_aspect"}'].
+	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
+	outcome := self onUIDo: [self doClick: aspect inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
 
-handleGetValue: path
-    "GET /value?aspect=X&windowTitle=Y
-     Reads current widget model value."
-    | queryString aspect windowTitle result |
-    queryString := String new.
-    (path includes: $?) ifTrue: [
-        | idx |
-        idx := path indexOf: $?.
-        queryString := path copyFrom: idx + 1 to: path size].
-    aspect := self queryParam: 'aspect' from: queryString.
-    windowTitle := self queryParam: 'windowTitle' from: queryString.
-    aspect == nil ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "missing_aspect", "message": "Query must include aspect"}'].
-    result := self onUIDo: [
-        | resolve |
-        resolve := self resolveWidget: aspect inWindow: windowTitle appClass: nil.
-        (resolve at: 3) ~~ nil ifTrue: [resolve at: 3]
-        ifFalse: [
-            | wrapper model val |
-            wrapper := resolve at: 2.
-            model := [wrapper widget model] on: self errorClass do: [:ex | nil].
-            model == nil ifTrue: [
-                '{"error": "no_model", "message": "Widget has no model"}']
-            ifFalse: [
-                val := [model value printString] on: self errorClass do: [:ex | String new].
-                '{"aspect": "' , aspect , '", "value": ' , (self jsonFor: val) , '}' ]]].
-    result == nil ifTrue: [result := '{"error": "ui_timeout"}'].
-    (result beginsWith: '{"aspect": ') ifTrue: [
-        ^self httpResponse: 200 type: 'application/json' body: result]
-    ifFalse: [
-        ^self httpResponse: 400 type: 'application/json' body: result]!
+doClick: aspect inWindow: winTitle
+	"Runs on UI process. Returns a JSON string.
 
-handleSetValue: path body: bodyString
-    "PUT /value?aspect=X&windowTitle=Y
-     Body: {""value"": ""new text""}
-     Sets ValueHolder value directly."
-    | aspect windowTitle bodyDict value result queryString idx |
-    queryString := String new.
-    idx := path indexOf: $?.
-    idx > 0 ifTrue: [queryString := path copyFrom: idx + 1 to: path size].
-    aspect := self queryParam: 'aspect' from: queryString.
-    windowTitle := self queryParam: 'windowTitle' from: queryString.
-    bodyDict := self jsonParse: bodyString.
-    value := bodyDict == nil ifTrue: [nil] ifFalse: [bodyDict at: 'value' ifAbsent: [nil]].
-    (aspect == nil or: [value == nil]) ifTrue: [
-        ^self httpResponse: 400 type: 'application/json' body: '{"error": "missing_params", "message": "Need aspect (query) and value (body)"}'].
-    result := self onUIDo: [
-        | resolve |
-        resolve := self resolveWidget: aspect inWindow: windowTitle appClass: nil.
-        (resolve at: 3) ~~ nil ifTrue: [resolve at: 3]
-        ifFalse: [
-            | wrapper model |
-            wrapper := resolve at: 2.
-            model := [wrapper widget model] on: self errorClass do: [:ex | nil].
-            model == nil ifTrue: [
-                '{"error": "no_model"}']
-            ifFalse: [
-                [model value: value] on: self errorClass do: [:ex |
-                    '{"error": "set_failed", "message": "' , ex description , '"}' ].
-                '{"ok": true, "aspect": "' , aspect , '", "value": "' , value , '"}' ]]].
-    result == nil ifTrue: [result := '{"error": "ui_timeout"}'].
-    (result beginsWith: '{"ok": ') ifTrue: [
-        ^self httpResponse: 200 type: 'application/json' body: result]
-    ifFalse: [
-        ^self httpResponse: 400 type: 'application/json' body: result]!
+	 Image-specific click strategy (probe-confirmed in storedev64):
+	   spec action returns nil here, so app perform: spec action is a dead end.
+	   Buttons in this image use a PluggableAdaptor whose setter block invokes
+	   the configured action callback when value: is sent.
+	   Sending  wrapper widget model value: true  fires the click.
+	 The same approach naturally selects radios / list rows / tabs whose
+	 model is a ValueHolder driven by the widget."
+	| r w err model oldVal result |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	oldVal := [model value] on: err do: [:ex | nil].
+	result := [model value: true. nil] on: err do: [:ex |
+		'{"error":"click_failed","message":"' , ex description , '"}'].
+	^result == nil
+		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","method":"model_value_true","oldValue":' , (self safeJsonFor: oldVal printString) , '}']
+		ifFalse: [result]!
+
+handleTypeBody: bodyString
+	"POST /type  -- sets the widget's ValueHolder value."
+	| dict aspect winTitle val outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	aspect := dict at: 'aspect' ifAbsent: [nil].
+	val := dict at: 'value' ifAbsent: [dict at: 'text' ifAbsent: [nil]].
+	(aspect == nil or: [val == nil]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_params","need":"aspect and value"}'].
+	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
+	outcome := self onUIDo: [self doType: aspect value: val inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doType: aspect value: val inWindow: winTitle
+	"Runs on UI process. Returns a JSON string."
+	| r w err model result |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	result := [model value: val. nil] on: err do: [:ex |
+		'{"error":"set_failed","message":"' , ex description , '"}'].
+	^result == nil
+		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","value":' , (self safeJsonFor: val) , '}']
+		ifFalse: [result]!
+
+handleGetValueQuery: queryString
+	"GET /value?aspect=X[&windowTitle=Y]"
+	| aspect winTitle outcome |
+	aspect := self queryParam: 'aspect' from: queryString.
+	winTitle := self queryParam: 'windowTitle' from: queryString.
+	aspect == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"missing_aspect"}'].
+	outcome := self onUIDo: [self doGetValue: aspect inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doGetValue: aspect inWindow: winTitle
+	"Runs on UI process. Returns a JSON string."
+	| r w err model val |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	val := [model value] on: err do: [:ex | nil].
+	^'{"ok":true,"aspect":"' , aspect , '","value":' , (self safeJsonFor: val) , '}'!
+
+handlePutValueQuery: queryString body: bodyString
+	"PUT /value?aspect=X[&windowTitle=Y]  body: {""value"":...}
+	 Alternative to POST /type. Reuses the type machinery."
+	| aspect winTitle dict val outcome |
+	aspect := self queryParam: 'aspect' from: queryString.
+	winTitle := self queryParam: 'windowTitle' from: queryString.
+	dict := self jsonParseFlat: bodyString.
+	val := dict == nil ifTrue: [nil] ifFalse: [dict at: 'value' ifAbsent: [nil]].
+	(aspect == nil or: [val == nil]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_params","need":"aspect (query) and value (body)"}'].
+	outcome := self onUIDo: [self doType: aspect value: val inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
 
 queryParam: paramName from: queryString
-    "Extract a query parameter value from ?key=value&key2=value2 string."
-    | pairs |
-    pairs := self split: queryString on: $&.
-    pairs do: [:pair |
-        | eqPos key value |
-        eqPos := pair indexOf: $=.
-        eqPos > 0 ifTrue: [
-            key := (pair copyFrom: 1 to: eqPos - 1) asLowercase.
-            value := pair copyFrom: eqPos + 1 to: pair size.
-            key = paramName asLowercase ifTrue: [^value]]].
-    ^nil!
+	"Extract a query parameter (case-insensitive name) from a URL query string.
+	 Returns the URL-decoded value, or nil if missing."
+	| pairs target |
+	queryString isEmpty ifTrue: [^nil].
+	target := paramName asLowercase.
+	pairs := self split: queryString on: $&.
+	pairs do: [:pair |
+		| eq key value |
+		eq := pair indexOf: $=.
+		eq > 0 ifTrue: [
+			key := (pair copyFrom: 1 to: eq - 1) asLowercase.
+			key = target ifTrue: [
+				value := pair copyFrom: eq + 1 to: pair size.
+				^self urlDecode: value]]].
+	^nil!
 
-!VWBridge methodsFor: 'screenshot'!
+urlDecode: aString
+	"Tiny URL decoder: + -> space, %HH -> char(HH)."
+	| out i ch len err |
+	err := self errorClass.
+	out := Core.WriteStream on: Core.String new.
+	i := 1.
+	len := aString size.
+	[i <= len] whileTrue: [
+		ch := aString at: i.
+		ch = $+
+			ifTrue: [out nextPut: (Core.Character value: 32). i := i + 1]
+			ifFalse: [
+				(ch = $% and: [i + 2 <= len])
+					ifTrue: [
+						| hex byte |
+						hex := aString copyFrom: i + 1 to: i + 2.
+						byte := [Core.Integer readFrom: (Core.ReadStream on: hex) base: 16]
+							on: err do: [:ex | 32].
+						out nextPut: (Core.Character value: byte).
+						i := i + 3]
+					ifFalse: [
+						out nextPut: ch.
+						i := i + 1]]].
+	^out contents! !
 
-handleScreenshot: bodyString
-    "POST /screenshot
-     Body: {""scope"": ""screen""} or {""scope"": ""window"", ""windowTitle"": ""X""}
-     Returns base64-encoded PNG in JSON: {""ok"": true, ""screenshot"": ""<base64>""}.
-     Feature-detects Display + PNG encoding."
-    | bodyDict scope windowTitle result pngBytes b64 |
-    bodyDict := bodyString isEmpty
-        ifTrue: [Dictionary new]
-        ifFalse: [self jsonParse: bodyString].
-    scope := 'screen'.
-    windowTitle := nil.
-    bodyDict ~~ nil ifTrue: [
-        scope := bodyDict at: 'scope' ifAbsent: ['screen'].
-        windowTitle := bodyDict at: 'windowTitle' ifAbsent: [nil]].
-    result := self onUIDo: [
-        | display form stream encoded err |
-        err := self errorClass.
-        "Find Display"
-        display := self globalNamed: #Display.
-        display == nil ifTrue: ['{"error": "no_display", "message": "Display global not found"}']
-        ifFalse: [
-            "Capture screen area"
-            form := [display contentsOfArea: display boundingBox] on: err do: [:ex | nil].
-            form == nil ifTrue: ['{"error": "capture_failed", "message": "Could not capture Display contents"}']
-            ifFalse: [
-                "Encode as PNG to ByteArray"
-                stream := WriteStream on: ByteArray new.
-                encoded := false.
-                "Try PNGReadWriter"
-                #(PNGReadWriter ImageReadWriter) do: [:clsName |
-                    encoded == false ifTrue: [
-                        | pngClass |
-                        pngClass := self globalNamed: clsName.
-                        pngClass == nil ifTrue: [
-                            #(Graphics UI) do: [:ns |
-                                pngClass == nil ifTrue: [
-                                    | nsObj |
-                                    nsObj := self globalNamed: ns.
-                                    nsObj ~~ nil ifTrue: [
-                                        pngClass := nsObj at: clsName ifAbsent: [nil]]]]].
-                        pngClass ~~ nil ifTrue: [
-                            (pngClass respondsTo: #putForm: onStream:) ifTrue: [
-                                [pngClass putForm: form onStream: stream.
-                                encoded := true] on: err do: [:ex | nil]].
-                            encoded == false ifTrue: [
-                                (pngClass respondsTo: #putForm: onFileNamed:) ifTrue: [
-                                    | tmpName tmpFile |
-                                    tmpName := 'C:\Users\ammaganyane\forge\vw_screenshot.png'.
-                                    tmpFile := [tmpName asFilename] on: err do: [:ex | nil].
-                                    tmpFile ~~ nil ifTrue: [
-                                        [pngClass putForm: form onFileNamed: tmpFile.
-                                        encoded := true.
-                                        stream := [tmpFile readStream] on: err do: [:ex | nil].
-                                        stream ~~ nil ifTrue: [
-                                            stream binary.
-                                            stream := ReadStream on: (stream contents)]]
-                                            on: err do: [:ex | nil]]]]]]].
-                encoded == false ifTrue: [
-                    '{"error": "no_png_encoder", "message": "No PNG encoding class found (tried PNGReadWriter, ImageReadWriter)"}'
-                ] ifFalse: [
-                    stream contents  "returns ByteArray - caller will base64 encode" ]]]].
-    result == nil ifTrue: [
-        ^self httpResponse: 500 type: 'application/json' body: '{"error": "ui_timeout"}'].
-    (result isKindOf: String) ifTrue: [
-        ^self httpResponse: 500 type: 'application/json' body: result].
-    "result is a ByteArray with PNG bytes"
-    pngBytes := result.
-    b64 := self base64Encode: pngBytes.
-    ^self httpResponse: 200 type: 'application/json' body: '{"ok": true, "screenshot": "' , b64 , '"}'!
+!VWBridge methodsFor: 'json parsing'!
 
-!VWBridge methodsFor: 'base64'!
+jsonParseFlat: aString
+	"Minimal JSON parser. Returns Dictionary keyed by String, values are
+	 String / Number / Boolean / nil. FLAT objects only - no arrays or
+	 nested objects (none needed for our request bodies). nil on parse error.
+	 Uses a 1-element-Core.Array cursor because VW forbids assigning to method args."
+	| cursor c dict key val |
+	aString isEmpty ifTrue: [^nil].
+	cursor := Core.Array with: 1.
+	self skipWs: aString cursor: cursor.
+	c := self peek: aString cursor: cursor.
+	c = ${ ifFalse: [^nil].
+	self advance: cursor.
+	dict := Core.Dictionary new.
+	[self skipWs: aString cursor: cursor.
+	 c := self peek: aString cursor: cursor.
+	 c ~~ nil and: [c ~= $}]] whileTrue: [
+		key := self parseQuotedString: aString cursor: cursor.
+		key == nil ifTrue: [^nil].
+		self skipWs: aString cursor: cursor.
+		(self peek: aString cursor: cursor) = $: ifFalse: [^nil].
+		self advance: cursor.
+		self skipWs: aString cursor: cursor.
+		val := self parseAnyValue: aString cursor: cursor.
+		dict at: key put: val.
+		self skipWs: aString cursor: cursor.
+		(self peek: aString cursor: cursor) = $, ifTrue: [self advance: cursor]].
+	(self peek: aString cursor: cursor) == nil ifTrue: [^nil].
+	self advance: cursor.
+	^dict!
 
-base64Encode: aByteArray
-    "Manual base64 encoding - no library dependency. Handles any ByteArray."
-    | alphabet out i b |
-    alphabet := 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.
-    out := WriteStream on: String new.
-    i := 1.
-    [i <= aByteArray size] whileTrue: [
-        b := aByteArray at: i.
-        out nextPut: (alphabet at: ((b bitAnd: 252) bitShift: -2) + 1).
-        i + 1 <= aByteArray size
-            ifTrue: [b := (b bitShift: 8) + (aByteArray at: i + 1)]
-            ifFalse: [b := b bitShift: 8].
-        out nextPut: (alphabet at: (((b bitAnd: 48) bitShift: -4) bitAnd: 63) + 1).
-        i + 1 <= aByteArray size
-            ifTrue: [
-                i + 2 <= aByteArray size
-                    ifTrue: [b := (b bitShift: 8) + (aByteArray at: i + 2)]
-                    ifFalse: [b := b bitShift: 2].
-                out nextPut: (alphabet at: (((b bitAnd: 60) bitShift: -2) bitAnd: 63) + 1).
-                i + 2 <= aByteArray size
-                    ifTrue: [
-                        out nextPut: (alphabet at: ((b bitAnd: 63) + 1))]
-                    ifFalse: [out nextPut: $=]]
-            ifFalse: [
-                out nextPut: $=; nextPut: $=].
-        i := i + 3].
-    ^out contents!
+advance: cursor
+	cursor at: 1 put: (cursor at: 1) + 1!
 
-!VWBridge methodsFor: 'json'!
+peek: aString cursor: cursor
+	| i |
+	i := cursor at: 1.
+	i > aString size ifTrue: [^nil].
+	^aString at: i!
 
-jsonParse: aString
-    "Minimal JSON parser - handles flat string-keyed objects, 
-     strings, numbers, booleans, null. Returns a Dictionary or nil on error.
-     Does NOT handle nested objects or arrays (not needed for our bodies)."
-    | out pos |
-    pos := 1.
-    aString isEmpty ifTrue: [^nil].
-    out := self parseValue: aString pos: pos into: [:v :p | pos := p. v].
-    ^out == nil ifTrue: [nil] ifFalse: [
-        (out isKindOf: Dictionary) ifTrue: [out] ifFalse: [nil] ]!
+skipWs: aString cursor: cursor
+	[| c |
+	 c := self peek: aString cursor: cursor.
+	 c ~~ nil
+		and: [c = (Core.Character value: 32)
+			or: [c = (Core.Character value: 9)
+				or: [c = (Core.Character value: 10)
+					or: [c = (Core.Character value: 13)]]]]]
+		whileTrue: [self advance: cursor]!
 
-parseValue: aString pos: pos into: aBlock
-    "Parse one JSON value starting at pos. Evaluate aBlock with value and new position."
-    | c |
-    [pos <= aString size and: [
-        c := aString at: pos.
-        c = (Character value: 32) or: [c = (Character value: 9) or: [c = (Character value: 10) or: [c = (Character value: 13)]]]]
-    whileTrue: [pos := pos + 1].
-    pos > aString size ifTrue: [^aBlock value: nil value: pos].
-    c := aString at: pos.
-    c = ${ ifTrue: [^self parseObject: aString pos: pos + 1 into: aBlock].
-    c = $" ifTrue: [^self parseString: aString pos: pos + 1 into: aBlock].
-    ((c between: $0 and: $9) or: [c = $-]) ifTrue: [^self parseNumber: aString pos: pos into: aBlock].
-    "true"
-    (pos + 3 <= aString size and: [(aString copyFrom: pos to: pos + 3) = 'true']) ifTrue: [
-        ^aBlock value: true value: pos + 4].
-    "false"
-    (pos + 4 <= aString size and: [(aString copyFrom: pos to: pos + 4) = 'false']) ifTrue: [
-        ^aBlock value: false value: pos + 5].
-    "null"
-    (pos + 3 <= aString size and: [(aString copyFrom: pos to: pos + 3) = 'null']) ifTrue: [
-        ^aBlock value: nil value: pos + 4].
-    ^aBlock value: nil value: pos!
+parseQuotedString: aString cursor: cursor
+	"At opening quote. Returns the string content (no quotes), or nil on error."
+	| out c esc |
+	(self peek: aString cursor: cursor) = $" ifFalse: [^nil].
+	self advance: cursor.
+	out := Core.WriteStream on: Core.String new.
+	[c := self peek: aString cursor: cursor.
+	 c ~~ nil and: [c ~= $"]] whileTrue: [
+		c = $\
+			ifTrue: [
+				self advance: cursor.
+				esc := self peek: aString cursor: cursor.
+				esc == nil ifTrue: [^nil].
+				esc = $n ifTrue: [out nextPut: (Core.Character value: 10)].
+				esc = $t ifTrue: [out nextPut: (Core.Character value: 9)].
+				esc = $r ifTrue: [out nextPut: (Core.Character value: 13)].
+				(esc = $" or: [esc = $\ or: [esc = $/]]) ifTrue: [out nextPut: esc].
+				self advance: cursor]
+			ifFalse: [
+				out nextPut: c.
+				self advance: cursor]].
+	c == nil ifTrue: [^nil].
+	self advance: cursor.
+	^out contents!
 
-parseObject: aString pos: pos into: aBlock
-    "Parse JSON object {key: value, ...} into Dictionary."
-    | dict c |
-    dict := Dictionary new.
-    [pos <= aString size] whileTrue: [
-        [pos <= aString size and: [
-            c := aString at: pos.
-            c = (Character value: 32) or: [c = (Character value: 9) or: [c = (Character value: 10) or: [c = (Character value: 13)]]]]
-        whileTrue: [pos := pos + 1].
-        pos > aString size ifTrue: [^aBlock value: dict value: pos].
-        c := aString at: pos.
-        c = $} ifTrue: [^aBlock value: dict value: pos + 1].
-        c = $,  ifTrue: [pos := pos + 1].
-        c = $" ifTrue: [
-            self parseString: aString pos: pos + 1 into: [:key :newPos |
-                | colonPos |
-                pos := newPos.
-                [pos <= aString size and: [
-                    (aString at: pos) = (Character value: 32) or: [(aString at: pos) = (Character value: 9) or: [(aString at: pos) = $: ]]]
-                whileTrue: [
-                    (aString at: pos) = $: 
-                        ifTrue: [pos := pos + 1]
-                        ifFalse: [pos := pos + 1]].
-                self parseValue: aString pos: pos into: [:val :newPos2 |
-                    dict at: key put: val.
-                    pos := newPos2]]].
-        c = $} ifFalse: [pos := pos + 1]].
-    ^aBlock value: dict value: pos!
+parseAnyValue: aString cursor: cursor
+	"Parse a JSON value (whitespace already skipped). Returns the value
+	 or nil. Note: a parsed JSON null also yields nil - callers should
+	 not distinguish missing-key from explicit-null."
+	| c start end |
+	c := self peek: aString cursor: cursor.
+	c == nil ifTrue: [^nil].
+	c = $" ifTrue: [^self parseQuotedString: aString cursor: cursor].
+	c = $t ifTrue: [^self matchKeyword: 'true' as: true in: aString cursor: cursor].
+	c = $f ifTrue: [^self matchKeyword: 'false' as: false in: aString cursor: cursor].
+	c = $n ifTrue: [^self matchKeyword: 'null' as: nil in: aString cursor: cursor].
+	start := cursor at: 1.
+	[c := self peek: aString cursor: cursor.
+	 c ~~ nil
+		and: [(c between: $0 and: $9)
+			or: [c = $- or: [c = $+ or: [c = $. or: [c = $e or: [c = $E]]]]]]]
+		whileTrue: [self advance: cursor].
+	end := (cursor at: 1) - 1.
+	end < start ifTrue: [^nil].
+	^[(aString copyFrom: start to: end) asNumber] on: self errorClass do: [:ex | nil]!
 
-parseString: aString pos: pos into: aBlock
-    "Parse JSON string, handling escape sequences."
-    | out c |
-    out := WriteStream on: String new.
-    [pos <= aString size] whileTrue: [
-        c := aString at: pos.
-        c = $" ifTrue: [^aBlock value: out contents value: pos + 1].
-        c = $\ ifTrue: [
-            pos := pos + 1.
-            pos <= aString size ifTrue: [
-                | esc |
-                esc := aString at: pos.
-                esc = $" ifTrue: [out nextPut: $"].
-                esc = $\ ifTrue: [out nextPut: $\].
-                esc = $/ ifTrue: [out nextPut: $/].
-                esc = $n ifTrue: [out nextPut: (Character value: 10)].
-                esc = $t ifTrue: [out nextPut: (Character value: 9)]]
-            ifFalse: [^aBlock value: out contents value: pos].
-            pos := pos + 1]
-        ifFalse: [
-            out nextPut: c.
-            pos := pos + 1]].
-    ^aBlock value: out contents value: pos!
+matchKeyword: kw as: value in: aString cursor: cursor
+	"Consume the literal kw if it matches at cursor; return value. Else nil."
+	| i len |
+	i := cursor at: 1.
+	len := kw size.
+	(i + len - 1) > aString size ifTrue: [^nil].
+	(aString copyFrom: i to: i + len - 1) = kw ifFalse: [^nil].
+	cursor at: 1 put: i + len.
+	^value!
 
-parseNumber: aString pos: pos into: aBlock
-    "Parse a JSON number (integer or float)."
-    | start ch intStr |
-    start := pos.
-    [pos <= aString size] whileTrue: [
-        ch := aString at: pos.
-        ((ch between: $0 and: $9) or: [ch = $. or: [ch = $- or: [ch = $e or: [ch = $E or: [ch = $+]]]]])
-            ifTrue: [pos := pos + 1]
-            ifFalse: [^aBlock value: ((aString copyFrom: start to: pos - 1) asNumber) value: pos]].
-    ^aBlock value: nil value: pos!
+safeJsonFor: anObject
+	"Wrap jsonFor: in an error handler. Returns 'null' on any failure."
+	^[self jsonFor: anObject] on: self errorClass do: [:ex | 'null']! !
+
+"=== Restart the bridge to pick up Phase A dispatcher + endpoints ==="
+VWBridge stop.
+VWBridge start!
