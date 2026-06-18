@@ -138,6 +138,54 @@ findMenuBarInWindowMatching: titleSubstring
 					mb ~~ nil ifTrue: [matched := mb]]]]].
 	^matched! !
 
+!VWBridge methodsFor: 'window tracking'!
+
+controllerSet
+	"Snapshot the currently-scheduled controllers as an IdentitySet.
+	 Used by action endpoints to diff window changes before vs after
+	 the action - so test runners know what windows the click opened
+	 or closed without having to poll /windows separately."
+	| mgr err set |
+	err := self errorClass.
+	set := Core.IdentitySet new.
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [^set].
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:c | set add: c].
+	^set!
+
+describeControllers: aCollection
+	"Describe each controller as a Dictionary with title / appClass /
+	 viewClass / bounds - same shape as /windows entries so callers can
+	 reuse their parsing."
+	| err result |
+	err := self errorClass.
+	result := Core.OrderedCollection new.
+	aCollection do: [:ctrl |
+		| d view app |
+		d := Core.Dictionary new.
+		view := [ctrl view] on: err do: [:ex | nil].
+		app := self applicationFor: ctrl.
+		d at: 'title' put: ([view label asString] on: err do: [:ex | nil]).
+		d at: 'appClass' put: (app == nil ifTrue: [nil] ifFalse: [app class name asString]).
+		d at: 'viewClass' put: (view == nil ifTrue: [nil] ifFalse: [view class name asString]).
+		d at: 'bounds' put: ([view displayBox printString] on: err do: [:ex | nil]).
+		result add: d].
+	^result!
+
+windowDiffBefore: beforeSet after: afterSet
+	"Compare two controller snapshots; return Dictionary
+	 { opened: [...], closed: [...] } - each list is full controller
+	 descriptions, ready to embed in a JSON response."
+	| opened closed d |
+	opened := Core.OrderedCollection new.
+	afterSet do: [:c | (beforeSet includes: c) ifFalse: [opened add: c]].
+	closed := Core.OrderedCollection new.
+	beforeSet do: [:c | (afterSet includes: c) ifFalse: [closed add: c]].
+	d := Core.Dictionary new.
+	d at: 'opened' put: (self describeControllers: opened).
+	d at: 'closed' put: (self describeControllers: closed).
+	^d! !
+
 !VWBridge methodsFor: 'menu trees'!
 
 menuTreeForMenuBar: aMenuBar
@@ -223,7 +271,10 @@ handleMenuQuery: queryString
 	winTitle := self queryParam: 'windowTitle' from: queryString.
 	outcome := self onUIDo: [self doMenuList: winTitle].
 	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
-	^(outcome beginsWith: '{"ok":')
+	"Substring check (not beginsWith:) because jsonFor: on a Dictionary
+	 does NOT guarantee key order - '{""ok"":true,...' might be serialized
+	 as '{""menus"":[...],""ok"":true}' and beginsWith: would falsely 400."
+	^((outcome indexOfSubCollection: '"ok":true' startingAt: 1) > 0)
 		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
 		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
 
@@ -258,7 +309,9 @@ handleMenuClickBody: bodyString
 	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
 	outcome := self onUIDo: [self doMenuClickPath: pathArray inWindow: winTitle].
 	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
-	^(outcome beginsWith: '{"ok":')
+	"Substring check (not beginsWith:) - jsonFor: on the response Dictionary
+	 doesn't guarantee 'ok' lands first."
+	^((outcome indexOfSubCollection: '"ok":true' startingAt: 1) > 0)
 		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
 		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
 
@@ -269,8 +322,11 @@ doMenuClickPath: pathArray inWindow: winTitle
 	   - BlockClosure   : leafValue value             (MAS menus mostly use this -
 	                      block closures built by Menu>>addItemLabel:withOperation:
 	                      that capture the action via lexical scope)
-	   - anything else  : reject with unsupported_leaf_value"
-	| menuBar walked leafItem performer leafValue err result response dispatch blockCls |
+	   - anything else  : reject with unsupported_leaf_value
+	 Snapshots scheduled controllers before + after the dispatch so the
+	 response can tell the caller which windows the click opened/closed."
+	| menuBar walked leafItem performer leafValue err result response dispatch blockCls
+	  beforeSet afterSet windowsInfo |
 	err := self errorClass.
 	menuBar := self findMenuBarInWindowMatching: winTitle.
 	menuBar == nil ifTrue: [^'{"error":"window_or_menubar_not_found"}'].
@@ -290,6 +346,7 @@ doMenuClickPath: pathArray inWindow: winTitle
 	dispatch == nil ifTrue: [
 		^'{"error":"unsupported_leaf_value","class":"' , leafValue class name asString ,
 			'","value":' , (self jsonFor: leafValue printString) , '}'].
+	beforeSet := self controllerSet.
 	result := dispatch = 'perform'
 		ifTrue: [
 			[performer perform: leafValue. nil] on: err do: [:ex |
@@ -299,12 +356,15 @@ doMenuClickPath: pathArray inWindow: winTitle
 			[leafValue value. nil] on: err do: [:ex |
 				'{"error":"block_eval_failed","message":' , (self jsonFor: ex description) , '}']].
 	result ~~ nil ifTrue: [^result].
+	afterSet := self controllerSet.
+	windowsInfo := self windowDiffBefore: beforeSet after: afterSet.
 	response := Core.Dictionary new.
 	response at: 'ok' put: true.
 	response at: 'path' put: pathArray asArray.
 	response at: 'dispatch' put: dispatch.
 	response at: 'leafValue' put: leafValue printString.
 	response at: 'performer' put: performer class name asString.
+	response at: 'windows' put: windowsInfo.
 	^self jsonFor: response!
 
 walkMenuPath: pathArray inMenuBar: aMenuBar
@@ -413,7 +473,7 @@ dispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8"}'].
+				body: '{"status":"ok","version":"0.8.1"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
