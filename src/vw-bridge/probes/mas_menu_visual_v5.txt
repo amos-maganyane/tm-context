@@ -1,0 +1,100 @@
+=== MAS MENU VISUAL-SIDE PROBE v5 ===
+
+MAS app: MasLauncher
+
+MAS view: ScheduledWindow
+
+menuBar: MenuBar
+
+
+
+--- menuBar  (MenuBar) instance variables ---
+
+  container  =  a MenuBarWrapper on: a MenuBar
+
+  eventHandlers  =  nil
+
+  properties  =  Dictionary (#contentFrame -> 0 @ 0 corner: 831 @ 21 extent: 831 @ 21 #intrinsicWidthConstraint -> MenuBar:530240:intrinsicWidth = unassigned...
+
+  components  =  OrderedCollection (a BoundedWrapper on: a MenuBarButtonView a BoundedWrapper on: a MenuBarButtonView a BoundedWrapper on: a MenuBarButtonVie...
+
+  preferredExtent  =  816 @ 21
+
+  layoutManager  =  a MenuBarLayoutManager
+
+  layoutIsInvalid  =  false
+
+  minimumExtent  =  0 @ 0
+
+  maximumExtent  =  1152921504606846975 @ 1152921504606846975
+
+  alignmentRectInsets  =  0 @ 0 corner: 0 @ 0
+
+  baseline  =  0
+
+  menuChannel  =  a Menu
+
+  performer  =  a MasLauncher
+
+  menuButtons  =  OrderedCollection (a MenuBarButtonView a MenuBarButtonView a MenuBarButtonView a MenuBarButtonView a MenuBarButtonView a MenuBarButtonView a...
+
+  nextMenuButton  =  nil
+
+  artist  =  an UI.Skins.Artists.MenuBarArtist
+
+  menuActivation  =  a MenuActivationForWindows
+
+
+
+--- menuBar children (via fallback selectors) ---
+
+  found 11 children via menuBar>>components
+
+
+
+  [1] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [2] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [3] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [4] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [5] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [6] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [7] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [8] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [9] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [10] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+  [11] wrapper=BoundedWrapper  inner-via=none  inner=nil
+
+
+
+=== PROBE v5 DONE ===
+

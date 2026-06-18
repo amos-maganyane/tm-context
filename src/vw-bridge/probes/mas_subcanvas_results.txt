@@ -1,0 +1,72 @@
+=== MAS toolbarCanvas SUBCANVAS PROBE ===
+
+Controller: an ApplicationStandardSystemController
+
+MAS app class: MasLauncher
+
+
+
+--- Top-level MAS namedComponents ---
+
+  count: 4
+
+  #GroupBox1  spec=GroupBoxSpec  widget=GroupBox  label=nil
+
+  #CallInterface  spec=CheckBoxSpec  widget=CheckButtonView  label='Enable Call Popups'
+
+  #imageDescriptionLabel  spec=LabelSpec  widget=PassiveLabel  label='Version MAS NR 311.10.7 12 January 2018'
+
+  #toolbarCanvas  spec=SubCanvasSpec  widget=CompositePart  label=nil
+
+
+
+--- toolbarCanvas wrapper ---
+
+  wrapper class: SpecWrapper
+
+  widget class: CompositePart
+
+  spec class: SubCanvasSpec
+
+  spec majorKey: nil
+
+  spec minorKey: nil
+
+  spec clientKey: nil
+
+
+
+--- Selectors that respond on tbWidget ---
+
+  client -> MasLauncher
+
+  components -> OrderedCollection
+
+
+
+--- View tree under toolbarCanvas wrapper ---
+
+[root] CompositePart
+
+
+
+Embedded app class: MasLauncher
+
+
+
+--- toolbarCanvas namedComponents (the prize) ---
+
+  count: 4
+
+  #GroupBox1  spec=GroupBoxSpec  widget=GroupBox  label=nil
+
+  #CallInterface  spec=CheckBoxSpec  widget=CheckButtonView  label='Enable Call Popups'
+
+  #imageDescriptionLabel  spec=LabelSpec  widget=PassiveLabel  label='Version MAS NR 311.10.7 12 January 2018'
+
+  #toolbarCanvas  spec=SubCanvasSpec  widget=CompositePart  label=nil
+
+
+
+=== PROBE DONE ===
+

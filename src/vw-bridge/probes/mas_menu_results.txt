@@ -1,0 +1,75 @@
+=== MAS MENU PROBE v3 ===
+
+MAS app: MasLauncher
+
+MAS view: ScheduledWindow
+
+
+
+--- masApp mainMenu structure (recursive) ---
+
+  class: Menu
+
+    (no items)
+
+
+
+--- Action-related selectors that respond on Party & Contract item ---
+
+
+
+--- First MenuBarButtonView (visual Party & Contract) ---
+
+  class: MenuBarButtonView
+
+
+
+--- First MenuBarButtonView  (MenuBarButtonView) instance variables ---
+
+  container  =  a BoundedWrapper on: a MenuBarButtonView
+
+  eventHandlers  =  nil
+
+  properties  =  Dictionary (#constraints -> MenuBarButtonView:181335:left = an UI.ConstraintUnassigned
+MenuBarButtonView:181335:width = ...
+
+  model  =  nil
+
+  controller  =  a MenuBarButtonController
+
+  state  =  a WidgetState
+
+  isInTransition  =  false
+
+  latestValue  =  nil
+
+  referenceValue  =  true
+
+  label  =  LabelWithAccessor for 'Party & Contract'
+
+  textStyle  =  nil
+
+  artist  =  an UI.Skins.Artists.MenuBarButtonArtist
+
+  partContainingMouse  =  nil
+
+  accessCharacterPosition  =  1
+
+  flyingOver  =  false
+
+  menuHolder  =  a Menu
+
+  menuBar  =  a MenuBar
+
+
+
+--- Action-related selectors that respond on the MenuBarButtonView ---
+
+  model -> nil
+
+  controller -> a MenuBarButtonController
+
+
+
+=== PROBE v3 DONE ===
+

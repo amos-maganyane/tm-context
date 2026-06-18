@@ -1,0 +1,18 @@
+=== MAS MENU VISUAL-SIDE PROBE v4 ===
+
+MAS app: MasLauncher
+
+MAS view: ScheduledWindow
+
+menuBar: MenuBar
+
+
+
+--- Top-level menu buttons (via menuBar.subViews) ---
+
+  count: 0
+
+
+
+=== PROBE v4 DONE ===
+

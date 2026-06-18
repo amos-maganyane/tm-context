@@ -1,0 +1,180 @@
+=== MAS FULL WIDGET TREE PROBE v2 ===
+
+Controller class: ApplicationStandardSystemController
+
+MAS app class: MasLauncher
+
+MAS root view class: ScheduledWindow
+
+
+
+--- Menu from masView>>menuBar ---
+
+  class: MenuBar
+
+  count: 11
+
+  1. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  2. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  3. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  4. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  5. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  6. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  7. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  8. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  9. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  10. BoundedWrapper  label=-  value=-  rawLabel=-
+
+  11. BoundedWrapper  label=-  value=-  rawLabel=-
+
+
+
+--- Menu from masApp>>mainMenu ---
+
+  class: Menu
+
+  count: 11
+
+  1. MenuItem  label='Party & Contract'  value=nil  rawLabel='&Party && Contract'
+
+  2. MenuItem  label='Product'  value=nil  rawLabel='P&roduct'
+
+  3. MenuItem  label='Prod. Supplier'  value=nil  rawLabel='Prod. &Supplier'
+
+  4. MenuItem  label='Broker Adm'  value=nil  rawLabel='Broker Adm'
+
+  5. MenuItem  label='Bulk Adm'  value=nil  rawLabel='Bulk Adm'
+
+  6. MenuItem  label='Offshore'  value=nil  rawLabel='Offshore'
+
+  7. MenuItem  label='RIO Management'  value=nil  rawLabel='RIO Management'
+
+  8. MenuItem  label='Reporting'  value=nil  rawLabel='Reporting'
+
+  9. MenuItem  label='Multimanager Portf.'  value=nil  rawLabel='Multimanager Portf.'
+
+  10. MenuItem  label='System'  value=nil  rawLabel='System'
+
+  11. MenuItem  label='Tools'  value=nil  rawLabel='Tools'
+
+
+
+--- Full widget tree (subViews + components combined, dedup) ---
+
+[root] ScheduledWindow  spec=-  aspect=-  label=-  action=-  model=MasLauncher  app=-
+
+  [root.1] CompositePart  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+    [root.1.1] MenuBarWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+      [root.1.1.1] MenuBar  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.1] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.1.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.2] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.2.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.3] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.3.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.4] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.4.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.5] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.5.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.6] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.6.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.7] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.7.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.8] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.8.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.9] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.9.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.10] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.10.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.1.1.11] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+          [root.1.1.1.11.1] MenuBarButtonView  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+    [root.1.2] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+      [root.1.2.1] CompositePart  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.1] SpecWrapper  spec=GroupBoxSpec  aspect=#GroupBox1  label=nil  action=-  model=-  app=-
+
+          [root.1.2.1.1.1] BoundingWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.1.1.1] GroupBox  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.2] SpecWrapper  spec=LabelSpec  aspect=nil  label=#momentumLogo  action=-  model=-  app=-
+
+          [root.1.2.1.2.1] LayoutWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.2.1.1] PassiveLabel  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.3] SpecWrapper  spec=RegionSpec  aspect=nil  label=nil  action=-  model=-  app=-
+
+          [root.1.2.1.3.1] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.3.1.1] VisualRegion  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.4] SpecWrapper  spec=SubCanvasSpec  aspect=#toolbarCanvas  label=nil  action=-  model=-  app=-
+
+          [root.1.2.1.4.1] BorderedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.4.1.1] WidgetStateWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+              [root.1.2.1.4.1.1.1] CompositePart  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.5] SpecWrapper  spec=LabelSpec  aspect=#imageDescriptionLabel  label='Version MAS NR 311.10.7 12 January 2018'  action=-  model=-  app=-
+
+          [root.1.2.1.5.1] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.5.1.1] PassiveLabel  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.6] SpecWrapper  spec=LabelSpec  aspect=nil  label='Momentum Wealth Administration System'  action=-  model=-  app=-
+
+          [root.1.2.1.6.1] BoundedWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.6.1.1] PassiveLabel  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+        [root.1.2.1.7] SpecWrapper  spec=CheckBoxSpec  aspect=#CallInterface  label='Enable Call Popups'  action=-  model=-  app=-
+
+          [root.1.2.1.7.1] LayoutWrapper  spec=-  aspect=-  label=-  action=-  model=-  app=-
+
+            [root.1.2.1.7.1.1] CheckButtonView  spec=-  aspect=-  label=-  action=-  model=ValueHolder  app=-
+
+
+
+--- Walked 50 nodes ---
+
+
+
+=== PROBE v2 DONE ===
+
