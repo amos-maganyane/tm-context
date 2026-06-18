@@ -1,0 +1,112 @@
+=== PHASE A API PROBE v2 ===
+
+Version: VisualWorks®, 9.3.1 of August 16, 2023
+
+
+
+--- DISPLAY CAPTURE ---
+
+  + Display class = Screen
+
+  - contentsOfArea: failed: Message not understood: #boundingBox
+
+
+
+--- PNG ENCODER ---
+
+  - no PNGReadWriter or ImageReadWriter found
+
+
+
+--- BASE64 ENCODER ---
+
+  - no Base64 class found (will hand-roll one)
+
+
+
+--- WIDGET INTERACTION SURFACE (NON-INVASIVE) ---
+
+  Surveys first ActionButtonSpec and first InputFieldSpec in any open window.
+
+  Reports selectors ONLY - never invokes actions or modifies values.
+
+
+
+--- CLICK SURFACE (first ActionButtonSpec) ---
+
+  app: GbxVisualLauncher   aspect: #addWidget
+
+  spec.label: 'Add...'
+
+  spec class: ActionButtonSpec
+
+  widget class: ActionButtonView
+
+  controller class: ViewEventControllerForLegacyWidgets
+
+  model class: PluggableAdaptor
+
+  spec action selector: nil (no action)
+
+  -- click strategy 1: app perform: actionSelector --
+
+  -- click strategy 2: controller direct invocation --
+
+  - ViewEventControllerForLegacyWidgets>>performAction
+
+  - ViewEventControllerForLegacyWidgets>>pressAction
+
+  - ViewEventControllerForLegacyWidgets>>action
+
+  - ViewEventControllerForLegacyWidgets>>invokeAction
+
+  - ViewEventControllerForLegacyWidgets>>simulateClick
+
+  - ViewEventControllerForLegacyWidgets>>clicked
+
+  -- click strategy 3: model-side trigger --
+
+  + PluggableAdaptor>>value
+
+  + PluggableAdaptor>>value:
+
+  - PluggableAdaptor>>triggerAction
+
+
+
+--- TYPE SURFACE (first InputFieldSpec) ---
+
+  app: Workbook   aspect: #importSummary
+
+  spec class: InputFieldSpec
+
+  widget class: InputFieldView
+
+  model class: ValueHolder
+
+  controller class: InputFieldController
+
+  current value (read-only): 'All'
+
+  + ValueHolder>>value:
+
+  + ValueHolder>>setValue:
+
+  - ValueHolder>>contents:
+
+  - ValueHolder>>setContents:
+
+  - ValueHolder>>setText:
+
+
+
+--- FILENAME WRITING ---
+
+  + Filename class: Filename
+
+  + wrote probe_write_test.txt
+
+
+
+=== PHASE A PROBE DONE ===
+

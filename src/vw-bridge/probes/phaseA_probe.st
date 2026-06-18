@@ -1,137 +1,192 @@
-"=== Phase A API Discovery Probe v1 ==="
-"Paste into VW workspace, Ctrl+E (Do It), check Transcript."
-"Tests: Display, event classes, PNG encoding, Base64, widget interaction APIs"
+"=== Phase A API Discovery Probe v2 - READ-ONLY ==="
+"v2 fixes from v1:
+ - namespace-proofed (Root.Smalltalk + Core.* qualified)
+ - ALL temp declarations moved to method/block start
+   (v1 had mid-block | foo | declarations - illegal Smalltalk)
+ RUN: paste into a NEW VW Workspace, Select All, Do It (Ctrl+E).
+ WRITES: C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\probes\phaseA_results.txt
+ NON-INVASIVE: every interaction probe checks for selectors only.
+ Does NOT click buttons, set values, or change image state."
 
-| err out |
+| err nl out emit lookup flag check
+  display form pngWriter b64 fnClass
+  mgr ctrls actionFinding inputFinding outFile transcript |
 
 err := Core.Error.
+nl := Core.String with: (Core.Character value: 13) with: (Core.Character value: 10).
 out := Core.WriteStream on: Core.String new.
+emit := [:line | out nextPutAll: line; nextPutAll: nl].
+lookup := [:sym | | v |
+    v := Root.Smalltalk at: sym ifAbsent: [nil].
+    v == nil ifTrue: [
+        #(Core Kernel OS UI Graphics Tools Net) do: [:nsName |
+            v == nil ifTrue: [
+                | ns |
+                ns := Root.Smalltalk at: nsName ifAbsent: [nil].
+                ns == nil ifFalse: [v := ns at: sym ifAbsent: [nil]]]]].
+    v].
+flag := [:bool | bool ifTrue: ['  + '] ifFalse: ['  - ']].
+check := [:cls :sel | cls ~~ nil and: [cls isBehavior and: [cls canUnderstand: sel]]].
 
-out cr; cr; show: '=== PHASE A API PROBE v1 ==='; cr.
+emit value: '=== PHASE A API PROBE v2 ==='.
+emit value: ('Version: ' , ([Root.Smalltalk version] on: err do: [:ex | 'unknown'])).
 
-"--- Display ---"
-| display |
-display := Root.Smalltalk at: #Display ifAbsent: [nil].
+"--- DISPLAY CAPTURE ---"
+emit value: ''.
+emit value: '--- DISPLAY CAPTURE ---'.
+display := lookup value: #Display.
 display == nil ifTrue: [
-    display := [Root.Smalltalk.Screen default] on: err do: [:e | nil]].
-out cr; show: 'Display: '; show: (display == nil ifTrue: ['- MISSING'] ifFalse: ['+ ' , display class name asString]).
+    | scr |
+    scr := lookup value: #Screen.
+    scr == nil ifFalse: [display := [scr default] on: err do: [:ex | nil]]].
+display == nil
+    ifTrue: [emit value: '  - Display global missing']
+    ifFalse: [
+        emit value: ('  + Display class = ' , display class name asString).
+        form := [display contentsOfArea: display boundingBox] on: err do: [:ex |
+            emit value: ('  - contentsOfArea: failed: ' , ex description). nil].
+        form == nil ifFalse: [
+            emit value: ('  + Form class = ' , form class name asString).
+            emit value: ('  + Form extent = ' , ([form extent printString] on: err do: [:ex | '?'])).
+            emit value: ('  + Form depth = ' , ([form depth printString] on: err do: [:ex | '?']))]].
 
-"--- Screen image capture ---"
-display ~~ nil ifTrue: [
-    [| form |
-    form := display contentsOfArea: display boundingBox.
-    out cr; show: 'Display>>contentsOfArea: '; show: form class name asString.
-    out cr; show: '  Form extent: '; show: form extent printString.
-    out cr; show: '  Form depth: '; show: form depth printString] on: err do: [:e |
-        out cr; show: 'Display>>contentsOfArea: - FAILED: '; show: e description asString]].
+"--- PNG ENCODER ---"
+emit value: ''.
+emit value: '--- PNG ENCODER ---'.
+pngWriter := lookup value: #PNGReadWriter.
+pngWriter == nil ifTrue: [pngWriter := lookup value: #ImageReadWriter].
+pngWriter == nil
+    ifTrue: [emit value: '  - no PNGReadWriter or ImageReadWriter found']
+    ifFalse: [
+        emit value: ('  + ' , pngWriter name asString).
+        emit value: ((flag value: (check value: pngWriter class value: #putForm:onStream:)) , pngWriter name , ' class>>putForm:onStream:').
+        emit value: ((flag value: (check value: pngWriter class value: #putForm:onFileNamed:)) , pngWriter name , ' class>>putForm:onFileNamed:')].
 
-"--- PNG encoding ---"
-| pngWriter |
-pngWriter := Root.Smalltalk at: #PNGReadWriter ifAbsent: [nil].
-pngWriter == nil ifTrue: [
-    pngWriter := Root.Smalltalk at: #ImageReadWriter ifAbsent: [nil]].
-pngWriter == nil ifTrue: [
-    #(Graphics UI) do: [:ns |
-        | n |
-        n := Root.Smalltalk at: ns ifAbsent: [nil].
-        n ~~ nil ifTrue: [
-            pngWriter == nil ifTrue: [pngWriter := n at: #PNGReadWriter ifAbsent: [nil]].
-            pngWriter == nil ifTrue: [pngWriter := n at: #ImageReadWriter ifAbsent: [nil]]]]].
-out cr; show: 'PNGReadWriter: '; show: (pngWriter == nil ifTrue: ['- MISSING'] ifFalse: ['+ ' , pngWriter name]).
+"--- BASE64 ---"
+emit value: ''.
+emit value: '--- BASE64 ENCODER ---'.
+b64 := nil.
+#(Base64MimeConverter Base64Encoder MIMEBase64 Base64Coder) do: [:sym |
+    b64 == nil ifTrue: [b64 := lookup value: sym]].
+b64 == nil
+    ifTrue: [emit value: '  - no Base64 class found (will hand-roll one)']
+    ifFalse: [
+        emit value: ('  + ' , b64 name asString).
+        #(encode: encodeBytes: mimeEncode: encodeString:) do: [:sel |
+            emit value: ((flag value: (check value: b64 class value: sel)) , b64 name , ' class>>' , sel)]].
 
-"--- Base64 ---"
-| b64 |
-b64 := Root.Smalltalk at: #Base64MimeConverter ifAbsent: [nil].
-b64 == nil ifTrue: [b64 := Root.Smalltalk at: #Base64Encoder ifAbsent: [nil]].
-b64 == nil ifTrue: [b64 := Root.Smalltalk at: #MIMEBase64 ifAbsent: [nil]].
-#(Net Core) do: [:ns |
-    | n |
-    n := Root.Smalltalk at: ns ifAbsent: [nil].
-    n ~~ nil ifTrue: [
-        b64 == nil ifTrue: [b64 := n at: #Base64MimeConverter ifAbsent: [nil]].
-        b64 == nil ifTrue: [b64 := n at: #Base64Encoder ifAbsent: [nil]]]]].
-out cr; show: 'Base64: '; show: (b64 == nil ifTrue: ['- MISSING (will implement manually)'] ifFalse: ['+ ' , b64 name]).
+"--- WIDGET INTERACTION SURFACE ---"
+emit value: ''.
+emit value: '--- WIDGET INTERACTION SURFACE (NON-INVASIVE) ---'.
+emit value: '  Surveys first ActionButtonSpec and first InputFieldSpec in any open window.'.
+emit value: '  Reports selectors ONLY - never invokes actions or modifies values.'.
+mgr := lookup value: #ScheduledControllers.
+mgr == nil
+    ifTrue: [emit value: '  - ScheduledControllers missing - cannot probe interaction']
+    ifFalse: [
+        ctrls := [mgr scheduledControllers] on: err do: [:ex | #()].
+        actionFinding := nil.
+        inputFinding := nil.
+        ctrls do: [:ctrl |
+            | app builder comps |
+            app := [ctrl model] on: err do: [:ex | nil].
+            (app == nil or: [([app builder] on: err do: [:ex | nil]) == nil]) ifTrue: [
+                app := [ctrl view application] on: err do: [:ex | nil]].
+            builder := app == nil ifTrue: [nil] ifFalse: [[app builder] on: err do: [:ex | nil]].
+            builder == nil ifFalse: [
+                comps := [builder namedComponents] on: err do: [:ex | nil].
+                comps == nil ifFalse: [
+                    comps keysAndValuesDo: [:asp :w |
+                        | specClassName |
+                        specClassName := [w spec class name asString] on: err do: [:ex | ''].
+                        (actionFinding == nil and: [specClassName = 'ActionButtonSpec'])
+                            ifTrue: [actionFinding := Core.Array with: app with: asp with: w].
+                        (inputFinding == nil and: [specClassName = 'InputFieldSpec'])
+                            ifTrue: [inputFinding := Core.Array with: app with: asp with: w]]]]].
 
-"--- Event classes (for click synthesis) ---"
-#(ButtonPress ButtonRelease ButtonPressEvent ButtonReleaseEvent
-   MouseButtonEvent InputEvent InputState
-   WindowEvent KeyboardEvent KeyPress KeyRelease)
-do: [:sym |
-    | cls |
-    cls := Root.Smalltalk at: sym ifAbsent: [nil].
-    cls == nil ifTrue: [
-        #(UI Graphics Kernel) do: [:ns |
-            | n |
-            n := Root.Smalltalk at: ns ifAbsent: [nil].
-            n ~~ nil ifTrue: [
-                cls == nil ifTrue: [cls := n at: sym ifAbsent: [nil]]]]].
-    out cr; show: '  '; show: sym; show: ': '; show: (cls == nil ifTrue: ['-'] ifFalse: ['+' , cls name])].
+        emit value: ''.
+        emit value: '--- CLICK SURFACE (first ActionButtonSpec) ---'.
+        actionFinding == nil
+            ifTrue: [emit value: '  - no ActionButtonSpec widget in any open window']
+            ifFalse: [
+                | app aspect w spec widget ctrlObj model actionSel |
+                app := actionFinding at: 1.
+                aspect := actionFinding at: 2.
+                w := actionFinding at: 3.
+                spec := [w spec] on: err do: [:ex | nil].
+                widget := [w widget] on: err do: [:ex | nil].
+                ctrlObj := widget == nil ifTrue: [nil] ifFalse: [[widget controller] on: err do: [:ex | nil]].
+                model := widget == nil ifTrue: [nil] ifFalse: [[widget model] on: err do: [:ex | nil]].
+                actionSel := spec == nil ifTrue: [nil] ifFalse: [[spec action] on: err do: [:ex | nil]].
+                emit value: ('  app: ' , app class name asString , '   aspect: ' , aspect printString).
+                emit value: ('  spec.label: ' , ([spec label printString] on: err do: [:ex | '?'])).
+                emit value: ('  spec class: ' , (spec == nil ifTrue: ['nil'] ifFalse: [spec class name asString])).
+                emit value: ('  widget class: ' , (widget == nil ifTrue: ['nil'] ifFalse: [widget class name asString])).
+                emit value: ('  controller class: ' , (ctrlObj == nil ifTrue: ['nil'] ifFalse: [ctrlObj class name asString])).
+                emit value: ('  model class: ' , (model == nil ifTrue: ['nil'] ifFalse: [model class name asString])).
+                emit value: ('  spec action selector: ' , (actionSel == nil ifTrue: ['nil (no action)'] ifFalse: [actionSel printString])).
+                emit value: '  -- click strategy 1: app perform: actionSelector --'.
+                actionSel == nil ifFalse: [
+                    emit value: ((flag value: (app respondsTo: actionSel)) , 'app>>' , actionSel asString)].
+                emit value: '  -- click strategy 2: controller direct invocation --'.
+                ctrlObj == nil ifFalse: [
+                    #(performAction pressAction action invokeAction simulateClick clicked) do: [:sel |
+                        emit value: ((flag value: (ctrlObj respondsTo: sel)) , ctrlObj class name asString , '>>' , sel asString)]].
+                emit value: '  -- click strategy 3: model-side trigger --'.
+                model == nil ifFalse: [
+                    #(value value: triggerAction) do: [:sel |
+                        emit value: ((flag value: (model respondsTo: sel)) , model class name asString , '>>' , sel asString)]]].
 
-"--- Widget controller selectors ---"
-| sc |
-sc := Root.Smalltalk at: #ScheduledControllers ifAbsent: [nil].
-sc ~~ nil ifTrue: [
-    [| ctrl app builder wrappers |
-    ctrl := sc scheduledControllers first.
-    app := ctrl model.
-    app ~~ nil ifTrue: [
-        builder := [app builder] on: err do: [:e | nil].
-        builder ~~ nil ifTrue: [
-            wrappers := [builder namedComponents] on: err do: [:e | nil].
-            wrappers ~~ nil ifTrue: [
-                | wrapper widget |
-                wrapper := wrappers values detect: [:w |
-                    [w spec class name = 'ActionButtonSpec'] on: err do: [:e | false]] ifNone: [nil].
-                wrapper ~~ nil ifTrue: [
-                    widget := [wrapper widget] on: err do: [:e | nil].
-                    widget ~~ nil ifTrue: [
-                        out cr; show: '--- Button widget controller API ---'.
-                        out cr; show: '  widget class: '; show: widget class name asString.
-                        [| ctrl |
-                        ctrl := widget controller.
-                        out cr; show: '  controller class: '; show: ctrl class name asString.
-                        out cr; show: '  respondsTo #performAction: '; show: (ctrl respondsTo: #performAction) printString.
-                        out cr; show: '  respondsTo #performActionFor: '; show: (ctrl respondsTo: #performActionFor:) printString.
-                        out cr; show: '  respondsTo #dispatchEvent: '; show: (ctrl respondsTo: #dispatchEvent:) printString.
-                        out cr; show: '  respondsTo #handleEvent: '; show: (ctrl respondsTo: #handleEvent:) printString] on: err do: [:e |
-                            out cr; show: '  controller error: '; show: e description asString]]].
-                "--- InputFieldView ---"
-                wrapper := wrappers values detect: [:w |
-                    [w spec class name = 'InputFieldSpec'] on: err do: [:e | false]] ifNone: [nil].
-                wrapper ~~ nil ifTrue: [
-                    widget := [wrapper widget] on: err do: [:e | nil].
-                    widget ~~ nil ifTrue: [
-                        out cr; show: '--- InputField widget API ---'.
-                        out cr; show: '  widget class: '; show: widget class name asString.
-                        | model |
-                        model := [widget model] on: err do: [:e | nil].
-                        model ~~ nil ifTrue: [
-                            out cr; show: '  model class: '; show: model class name asString.
-                            out cr; show: '  respondsTo #value: '; show: (model respondsTo: #value:) printString].
-                        out cr; show: '  respondsTo #controller: '; show: (widget respondsTo: #controller) printString.
-                        out cr; show: '  respondsTo #takeKeyboardFocus: '; show: (widget respondsTo: #takeKeyboardFocus) printString]]]]]]] on: err do: [:e |
-                            out cr; show: 'Widget probe error: '; show: e description asString]].
+        emit value: ''.
+        emit value: '--- TYPE SURFACE (first InputFieldSpec) ---'.
+        inputFinding == nil
+            ifTrue: [emit value: '  - no InputFieldSpec widget in any open window']
+            ifFalse: [
+                | app aspect w spec widget model ctrlObj |
+                app := inputFinding at: 1.
+                aspect := inputFinding at: 2.
+                w := inputFinding at: 3.
+                spec := [w spec] on: err do: [:ex | nil].
+                widget := [w widget] on: err do: [:ex | nil].
+                model := widget == nil ifTrue: [nil] ifFalse: [[widget model] on: err do: [:ex | nil]].
+                ctrlObj := widget == nil ifTrue: [nil] ifFalse: [[widget controller] on: err do: [:ex | nil]].
+                emit value: ('  app: ' , app class name asString , '   aspect: ' , aspect printString).
+                emit value: ('  spec class: ' , (spec == nil ifTrue: ['nil'] ifFalse: [spec class name asString])).
+                emit value: ('  widget class: ' , (widget == nil ifTrue: ['nil'] ifFalse: [widget class name asString])).
+                emit value: ('  model class: ' , (model == nil ifTrue: ['nil'] ifFalse: [model class name asString])).
+                emit value: ('  controller class: ' , (ctrlObj == nil ifTrue: ['nil'] ifFalse: [ctrlObj class name asString])).
+                model == nil ifFalse: [
+                    emit value: ('  current value (read-only): ' , ([model value printString] on: err do: [:ex | '?'])).
+                    #(value: setValue: contents: setContents: setText:) do: [:sel |
+                        emit value: ((flag value: (model respondsTo: sel)) , model class name asString , '>>' , sel asString)]]].
+    ].
 
-"--- Filename / temp file writing ---"
-| fn |
-fn := Root.Smalltalk at: #Filename ifAbsent: [nil].
-fn == nil ifTrue: [
-    #(OS) do: [:ns |
-        | n |
-        n := Root.Smalltalk at: ns ifAbsent: [nil].
-        n ~~ nil ifTrue: [
-            fn == nil ifTrue: [fn := n at: #Filename ifAbsent: [nil]]]]].
-out cr; show: 'Filename: '; show: (fn == nil ifTrue: ['- MISSING'] ifFalse: ['+ ' , fn name]).
-fn ~~ nil ifTrue: [
-    [| tmp f |
-    tmp := fn named: 'C:\Users\ammaganyane\forge\probe_write_test.txt'.
-    f := [tmp writeStream] on: err do: [:e | nil].
-    f ~~ nil ifTrue: [
-        f nextPutAll: 'test'; close; close.
-        out cr; show: 'Filename>>writeStream: OK'].
-    f == nil ifTrue: [
-        out cr; show: 'Filename>>writeStream: FAILED']] on: err do: [:e |
-        out cr; show: 'Filename test FAILED: '; show: e description asString]].
+"--- FILENAME WRITING ---"
+emit value: ''.
+emit value: '--- FILENAME WRITING ---'.
+fnClass := lookup value: #Filename.
+fnClass == nil
+    ifTrue: [emit value: '  - Filename missing']
+    ifFalse: [
+        | f w |
+        emit value: ('  + Filename class: ' , fnClass name asString).
+        f := [fnClass named: 'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\probes\probe_write_test.txt']
+            on: err do: [:ex | nil].
+        f ~~ nil ifTrue: [
+            w := [f writeStream] on: err do: [:ex |
+                emit value: ('  - writeStream failed: ' , ex description). nil].
+            w ~~ nil ifTrue: [
+                [w nextPutAll: 'phaseA-probe-ok'. w close.
+                 emit value: '  + wrote probe_write_test.txt'] on: err do: [:ex |
+                    emit value: ('  - write failed: ' , ex description)]]]].
 
-out cr; cr; show: '=== PROBE DONE ==='.
-Transcript cr; show: out contents
+emit value: ''.
+emit value: '=== PHASE A PROBE DONE ==='.
+
+outFile := 'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\probes\phaseA_results.txt' asFilename writeStream.
+[outFile nextPutAll: out contents] ensure: [outFile close].
+
+transcript := lookup value: #Transcript.
+transcript == nil ifFalse: [
+    transcript cr; show: out contents.
+    transcript cr; show: 'Phase A results: C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\probes\phaseA_results.txt'; cr].
