@@ -102,6 +102,13 @@ target ~~ nil ifTrue: [
 ### Why `closeAndUnschedule` works when others don't
 `closeAndUnschedule` removes the controller from `scheduledControllers` and triggers the OS-level window close. The OS close event propagates back into VW's event queue, which the modal's loop processes on its next iteration (and the OS event arrival forces such an iteration). This is the only path that reliably wakes the wedged loop.
 
+**Caveat (2026-06-19 PM):** `closeAndUnschedule` reliably dismisses the modal visually and frees the `scheduledControllers` slot, but does NOT always cause `Dialog confirm:` to return `true` (or `false`) to its caller:
+
+- **UI-process caller (e.g. an action handler called via `/click`):** `Dialog confirm:` appears to return `nil` (or something non-boolean) — both `ifTrue:` and `ifFalse:` branches are skipped, the handler silently exits. `recordedAccept=true` from `/dialogs/respond` does NOT propagate as a `true` return.
+- **Serve-process caller (e.g. `Dialog confirm:` called via `/eval`):** `Dialog confirm:` never returns at all — the serve-process stays wedged in the modal wait loop indefinitely. The `/eval` HTTP call hangs.
+
+See [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) Bug #2 for reproductions and proposed fixes (likely: simulate the YesButton click instead of using `closeAndUnschedule`).
+
 ## Cascade modals (CRITICAL)
 
 In MAS, dismissing the first modal often triggers a SECOND modal. Example sequence for the Party Search "find" button:

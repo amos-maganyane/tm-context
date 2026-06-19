@@ -20,7 +20,19 @@ Run these via `/eval` to characterize the wedge:
 ScheduledControllers activeControllerProcess printString
 ```
 
-If this returns `'nil'`, **input dispatch is broken**. Normal VW always has an active controller process. This is the smoking gun.
+If this returns `'nil'`, **input dispatch MAY be broken** — but is not necessarily wedged.
+
+**Calibration (2026-06-19 PM):** Session-end probing proved bridge `/click`, `/dialogs`, `/dialogs/respond`, `/menu/click`, and `/eval` all work with `activeControllerProcess=nil`. The "smoking gun" framing in earlier versions of this doc is overstated.
+
+`activeControllerProcess=nil` is a real concern only when combined with:
+
+- Multiple `UnhandledException` instances (>0) — see step 3
+- Hidden `ApplicationWindow` instances with `isOpen=true` and unfamiliar labels — see step 2
+- Zombie domain processes that don't terminate — see step 4
+- Manual mouse clicks in MAS not registering
+- Bridge `/click` / `/menu/click` actually failing (not just appearing to)
+
+In isolation, `activeControllerProcess=nil` is most likely transient state from modal-event-loop nesting or normal idle. See [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) for the full calibration evidence.
 
 ### 2. Hidden ApplicationWindow instances?
 
