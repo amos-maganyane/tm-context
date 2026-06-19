@@ -15,24 +15,40 @@ Phase B v0.8.1 bridge is **fully verified end-to-end against MAS**: `/menu` enum
 
 ## FIRST ACTION on resume — re-install the bridge
 
-The VW image holds the bridge in memory only. After any image restart, file in three files in this exact order (each file restarts the bridge, so the new methods overwrite the previous version's in-memory state):
+The VW image holds the bridge in memory only. After any image restart, file in
+the **single consolidated bridge file** via Workspace Do It (NOT Launcher → File
+Browser → File In, which has chunk-parser quirks that fail on this file):
 
 ```smalltalk
 'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseA.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB.st' asFilename fileIn
 ```
 
-Capture the new token from the Transcript (`VWBridge token: NNNN-NNNN`). Every non-`/health` request needs `Authorization: Bearer <NEW-TOKEN>`.
+This auto-starts the bridge and writes the new token to
+`src\vw-bridge\.token`. Every non-`/health` request needs
+`Authorization: Bearer <token-from-.token-file>`.
+
+> **Historical note:** Prior to 2026-06-19 the bridge was installed by filing
+> in 7 incremental patch files in strict order. Those files now live in
+> [`archive/`](./archive/) for reference; they are functionally identical to
+> the single consolidated file. See
+> [`../../knowledge/CONSOLIDATION-NOTES.md`](../../knowledge/CONSOLIDATION-NOTES.md)
+> for details.
 
 Smoke test from PowerShell:
 
 ```powershell
 curl http://127.0.0.1:9876/health
-# expect: {"status":"ok","version":"0.8.1"}
+# expect: {"status":"ok","version":"0.8.5"}
 ```
 
-If the Transcript filled with noise between file-in and now, get the current token via workspace doIt:
+If the Transcript filled with noise between file-in and now, read the token
+from the on-disk file (auto-written on every bridge start):
+
+```powershell
+Get-Content -LiteralPath C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\.token
+```
+
+Or via workspace doIt:
 
 ```smalltalk
 Transcript cr; show: 'Current token: ', VWBridge singleton token; cr

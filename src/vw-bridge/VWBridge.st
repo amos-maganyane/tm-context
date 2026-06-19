@@ -1,14 +1,7 @@
-"=== VW Widget Bridge v0.5 -- HTTP listener on 127.0.0.1:9876 ==="
-"INSTALL:  Launcher -> File Browser -> select this file -> File In.
- (Chunk format: do NOT paste into a workspace and Do It.)
- STOP:     evaluate   VWBridge stop    in any workspace.
- RESTART:  evaluate   VWBridge start
- Endpoints:  GET /health   GET /windows   GET /windows/tree
- v0.5: socket layer confirmed by phase1 probe (SocketAccessor
- newTCPserverAtPort: / listenFor: / accept / readAppendStream all exist).
- Semaphore timeout replaced with a Delay watchdog (no timeout API here).
- All namespace references fully qualified (Root.Smalltalk, Core.*)
- because unqualified names are ambiguous in this GBS image."
+"=== VW Widget Bridge v0.8.5 -- single-file consolidation of the 7-patch chain ==="
+"INSTALL: Launcher then File Browser then File In.  Token written to .token.
+ Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
+ the endpoint list, design notes, validation procedure, and migration plan."
 
 Root.Smalltalk defineClass: #VWBridge
 	superclass: #{Core.Object}
@@ -80,7 +73,16 @@ errorClass
 log: aString
 	| t |
 	t := self globalNamed: #Transcript.
-	t == nil ifFalse: [t cr; show: aString]! !
+	t == nil ifFalse: [t cr; show: aString]!
+
+beginsWithIgnoreCase: aString prefix: aPrefix
+	"Case-insensitive prefix match. Returns true if aString starts with aPrefix."
+	| s p |
+	aString == nil ifTrue: [^false].
+	s := aString asString.
+	p := aPrefix asString.
+	s size < p size ifTrue: [^false].
+	^(s copyFrom: 1 to: p size) asLowercase = p asLowercase! !
 
 !VWBridge methodsFor: 'initialization'!
 
@@ -107,19 +109,29 @@ stopListener
 !VWBridge methodsFor: 'networking'!
 
 listenerLoop
+	"Forks serve: per connection at userBackgroundPriority so a wedged
+	 request doesn't block the listener. Each connection runs on its
+	 own process; /health and other reads stay responsive even when
+	 some serve: is wedged behind a modal."
+	| prio |
 	listener := self createListener.
 	listener == nil ifTrue: [^self].
+	prio := [(self globalNamed: #Processor) userBackgroundPriority]
+		on: self errorClass do: [:ex | 4].
 	[true] whileTrue: [
 		| client |
 		client := [listener accept] on: self errorClass do: [:ex | nil].
 		client == nil
 			ifTrue: [(Core.Delay forMilliseconds: 200) wait]
 			ifFalse: [
-				[self serve: client] on: self errorClass do: [:ex |
-					[client close] on: self errorClass do: [:e2 | nil]]]]!
+				"Per-connection fork. serve: closes the connection on success;
+				 the on:do: closes it on exception too."
+				[[self serve: client] on: self errorClass do: [:ex |
+					[client close] on: self errorClass do: [:e2 | nil]]]
+					forkAt: prio]]!
 
 createListener
-	"Create a TCP server socket. Feature-detected; finalize after phase1 probe."
+	"Create a TCP server socket. Feature-detected via SocketAccessor."
 	| sa s |
 	sa := self globalNamed: #SocketAccessor.
 	sa == nil ifTrue: [
@@ -151,44 +163,152 @@ flushStream: aStream
 	[aStream flush] on: self errorClass do: [:ex | nil]!
 
 serve: aConnection
-	| stream requestLine response |
+	"Full HTTP read (request line + headers + body) + auth + dispatch.
+	 Called on a per-connection forked process from listenerLoop."
+	| stream requestLine headers bodyLen bodyString response err |
+	err := self errorClass.
 	stream := self streamFor: aConnection.
 	stream == nil ifTrue: [
-		[aConnection close] on: self errorClass do: [:ex | nil].
+		[aConnection close] on: err do: [:ex | nil].
 		^self].
 	"Disable line-end conversion: VW external streams otherwise rewrite
 	 CR/LF on the wire, which corrupts HTTP framing."
-	[stream lineEndTransparent] on: self errorClass do: [:ex | nil].
-	requestLine := [self readRequestLineFrom: stream] on: self errorClass do: [:ex | ''].
-	response := requestLine isEmpty
-		ifTrue: [self httpResponse: 400 type: 'text/plain' body: 'Bad Request']
-		ifFalse: [self dispatch: requestLine].
-	[stream nextPutAll: response] on: self errorClass do: [:ex | nil].
+	[stream lineEndTransparent] on: err do: [:ex | nil].
+	requestLine := [self readRequestLineFrom: stream] on: err do: [:ex | ''].
+	requestLine isEmpty ifTrue: [
+		response := self httpResponse: 400 type: 'text/plain' body: 'Bad Request'.
+		[stream nextPutAll: response] on: err do: [:ex | nil].
+		self flushStream: stream.
+		[stream close] on: err do: [:ex | nil].
+		[aConnection close] on: err do: [:ex | nil].
+		^self].
+	headers := [self readHeadersFrom: stream] on: err do: [:ex | Core.Dictionary new].
+	bodyString := ''.
+	bodyLen := headers at: 'content-length' ifAbsent: [nil].
+	bodyLen ~~ nil ifTrue: [
+		| n |
+		n := [bodyLen asNumber] on: err do: [:ex | 0].
+		n > 0 ifTrue: [
+			bodyString := [stream next: n] on: err do: [:ex | ''].
+			bodyString == nil ifTrue: [bodyString := '']]].
+	response := [self dispatch: requestLine headers: headers body: bodyString]
+		on: err do: [:ex |
+			self httpResponse: 500 type: 'application/json'
+				body: '{"error":"internal","message":"' , ex description , '"}'].
+	[stream nextPutAll: response] on: err do: [:ex | nil].
 	self flushStream: stream.
-	[stream close] on: self errorClass do: [:ex | nil].
-	[aConnection close] on: self errorClass do: [:ex | nil]!
+	[stream close] on: err do: [:ex | nil].
+	[aConnection close] on: err do: [:ex | nil]!
 
 readRequestLineFrom: aStream
 	| line |
 	line := aStream upTo: (Core.Character value: 10).
 	[line isEmpty not and: [line last asInteger = 13]] whileTrue: [
 		line := line copyFrom: 1 to: line size - 1].
-	^line! !
+	^line!
+
+readHeadersFrom: aStream
+	"Read HTTP headers until blank line. Lowercased keys."
+	| headers line colonPos key value err |
+	err := self errorClass.
+	headers := Core.Dictionary new.
+	[true] whileTrue: [
+		line := [aStream upTo: (Core.Character value: 10)] on: err do: [:ex | nil].
+		line == nil ifTrue: [^headers].
+		[line isEmpty not and: [line last asInteger = 13]] whileTrue: [
+			line := line copyFrom: 1 to: line size - 1].
+		line isEmpty ifTrue: [^headers].
+		colonPos := line indexOf: $:.
+		colonPos > 0 ifTrue: [
+			key := (line copyFrom: 1 to: colonPos - 1) asLowercase.
+			value := line copyFrom: colonPos + 1 to: line size.
+			[value isEmpty not and: [value first = (Core.Character value: 32)]] whileTrue: [
+				value := value copyFrom: 2 to: value size].
+			headers at: key put: value]].
+	^headers! !
+
+!VWBridge methodsFor: 'auth'!
+
+authError: requestLine headers: headers
+	"Returns nil if auth passes (or path is exempt). Otherwise returns an HTTP
+	 response string to short-circuit the dispatcher.
+	 Exempt paths: /health, /favicon.ico."
+	| parts path tokenHeader provided |
+	parts := self split: requestLine on: (Core.Character value: 32).
+	parts size < 2 ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
+	path := parts at: 2.
+	(path includes: $?) ifTrue: [path := path copyFrom: 1 to: (path indexOf: $?) - 1].
+	(path = '/health' or: [path = '/favicon.ico']) ifTrue: [^nil].
+	tokenHeader := headers at: 'authorization' ifAbsent: [nil].
+	tokenHeader == nil ifTrue: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Missing Authorization header"}'].
+	(self beginsWithIgnoreCase: tokenHeader prefix: 'Bearer ') ifFalse: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Expected Bearer <token>"}'].
+	provided := tokenHeader copyFrom: 8 to: tokenHeader size.
+	provided = token ifFalse: [
+		^self httpResponse: 401 type: 'application/json'
+			body: '{"error":"unauthorized","message":"Invalid token"}'].
+	^nil! !
 
 !VWBridge methodsFor: 'dispatching'!
 
-dispatch: requestLine
-	| parts method path |
+dispatch: requestLine headers: headers body: bodyString
+	"Main dispatcher (v0.8.5). All routes:
+	   GET  /health /windows /windows/tree /value /menu /dialogs
+	   POST /click /type /menu/click /eval /dialogs/respond
+	   PUT  /value
+	   OPTIONS *"
+	| parts method path queryString authResp |
+	authResp := self authError: requestLine headers: headers.
+	authResp ~~ nil ifTrue: [^authResp].
 	parts := self split: requestLine on: (Core.Character value: 32).
-	parts size < 2 ifTrue: [^self httpResponse: 400 type: 'text/plain' body: 'Bad Request'].
+	parts size < 2 ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
 	method := parts at: 1.
 	path := parts at: 2.
-	method = 'GET' ifFalse: [^self httpResponse: 404 type: 'text/plain' body: 'Not Found'].
-	path = '/health' ifTrue: [
-		^self httpResponse: 200 type: 'application/json' body: '{"status":"ok","version":"0.5"}'].
-	path = '/windows' ifTrue: [^self handleWindows].
-	path = '/windows/tree' ifTrue: [^self handleTree].
-	^self httpResponse: 404 type: 'text/plain' body: 'Not Found'!
+	queryString := ''.
+	(path includes: $?) ifTrue: [
+		| qi |
+		qi := path indexOf: $?.
+		queryString := path copyFrom: qi + 1 to: path size.
+		path := path copyFrom: 1 to: qi - 1].
+	method = 'GET' ifTrue: [
+		path = '/health' ifTrue: [
+			^self httpResponse: 200 type: 'application/json'
+				body: '{"status":"ok","version":"0.8.5"}'].
+		path = '/windows' ifTrue: [^self handleWindows].
+		path = '/windows/tree' ifTrue: [^self handleTree].
+		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
+		path = '/menu' ifTrue: [^self handleMenuQuery: queryString].
+		path = '/dialogs' ifTrue: [^self handleDialogsQuery].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'POST' ifTrue: [
+		path = '/click' ifTrue: [^self handleClickBody: bodyString].
+		path = '/type'  ifTrue: [^self handleTypeBody: bodyString].
+		path = '/menu/click' ifTrue: [^self handleMenuClickBody: bodyString].
+		path = '/eval' ifTrue: [^self handleEvalBody: bodyString].
+		path = '/dialogs/respond' ifTrue: [^self handleDialogsRespondBody: bodyString].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'PUT' ifTrue: [
+		path = '/value' ifTrue: [^self handlePutValueQuery: queryString body: bodyString].
+		^self httpResponse: 404 type: 'application/json'
+			body: '{"error":"not_found","path":"' , path , '"}'].
+	method = 'OPTIONS' ifTrue: [
+		^self httpResponse: 200 type: 'text/plain' body: ''].
+	^self httpResponse: 405 type: 'application/json'
+		body: '{"error":"method_not_allowed","method":"' , method , '"}'!
+
+dispatch: requestLine
+	"Compatibility shim: single-arg dispatch routes through the 3-arg
+	 dispatcher with empty headers/body. Kept so any old workspace
+	 code that calls VWBridge singleton dispatch: 'GET /health HTTP/1.1'
+	 still works (auth will of course reject it for non-/health paths)."
+	^self dispatch: requestLine headers: Core.Dictionary new body: ''!
 
 split: aString on: aCharacter
 	| parts current |
@@ -288,11 +408,755 @@ describeWidget: aWrapper aspect: anAspect
 	d at: 'value' put: ([aWrapper widget model value printString] on: err do: [:ex | nil]).
 	^d! !
 
+!VWBridge methodsFor: 'interaction'!
+
+resolveAspect: aspectName inWindowMatching: titleSubstring
+	"Locate {appModel, widgetWrapper} by aspect name.
+	 titleSubstring nil = any window.
+	 Returns Core.Array {app. wrapper. errorJSON}. Exactly one of
+	 {wrapper, errorJSON} is non-nil.
+	 Must be called on the UI process.
+
+	 Defensive valuesDo: iteration: some VW Dictionary subtypes
+	 (notably WealthPublishedPundleVersionsTool's namedComponents)
+	 don't implement #valuesDo: and crash with MNU. Fall back to do:
+	 (which on a Dictionary iterates values too) or skip if neither
+	 works. This blocks /click on ANY window when the problematic
+	 window happens to come first in scheduledControllers iteration."
+	| mgr err found |
+	err := self errorClass.
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [
+		^Core.Array with: nil with: nil with: '{"error":"no_scheduled_controllers"}'].
+	found := nil.
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
+		| app builder comps title titleOK wrapper aspectSym |
+		found == nil ifTrue: [
+			app := [ctrl model] on: err do: [:ex | nil].
+			(app == nil or: [([app builder] on: err do: [:ex | nil]) == nil]) ifTrue: [
+				app := [ctrl view application] on: err do: [:ex | nil]].
+			builder := app == nil ifTrue: [nil] ifFalse: [[app builder] on: err do: [:ex | nil]].
+			builder ~~ nil ifTrue: [
+				title := [ctrl view label asString] on: err do: [:ex | ''].
+				titleOK := titleSubstring == nil
+					or: [(title indexOfSubCollection: titleSubstring startingAt: 1) > 0].
+				titleOK ifTrue: [
+					comps := [builder namedComponents] on: err do: [:ex | nil].
+					comps ~~ nil ifTrue: [
+						aspectSym := [aspectName asSymbol] on: err do: [:ex | nil].
+						aspectSym ~~ nil ifTrue: [
+							wrapper := [comps at: aspectSym ifAbsent: [nil]] on: err do: [:ex | nil]].
+						wrapper == nil ifTrue: [
+							wrapper := [comps at: aspectName ifAbsent: [nil]] on: err do: [:ex | nil]].
+						wrapper == nil ifTrue: [
+							(comps respondsTo: #valuesDo:)
+								ifTrue: [
+									comps valuesDo: [:w |
+										wrapper == nil ifTrue: [
+											([w spec label asString = aspectName] on: err do: [:ex | false])
+												ifTrue: [wrapper := w]]]]
+								ifFalse: [
+									(comps respondsTo: #do:) ifTrue: [
+										comps do: [:w |
+											wrapper == nil ifTrue: [
+												([w spec label asString = aspectName] on: err do: [:ex | false])
+													ifTrue: [wrapper := w]]]]]].
+						wrapper ~~ nil ifTrue: [
+							found := Core.Array with: app with: wrapper with: nil]]]]]].
+	found ~~ nil ifTrue: [^found].
+	^Core.Array with: nil with: nil
+		with: '{"error":"widget_not_found","aspect":"' , aspectName , '"}'!
+
+handleClickBody: bodyString
+	"POST /click -- invokes the widget's spec action on the application."
+	| dict aspect winTitle outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	aspect := dict at: 'aspect' ifAbsent: [nil].
+	aspect == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"missing_aspect"}'].
+	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
+	outcome := self onUIDo: [self doClick: aspect inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doClick: aspect inWindow: winTitle
+	"Runs on UI process. Returns a JSON string.
+
+	 Image-specific click strategy (probe-confirmed):
+	   spec action returns nil here, so  app perform: spec action  is a
+	   dead end. Buttons in this image use a PluggableAdaptor whose
+	   setter block invokes the configured action callback when value:
+	   is sent. Sending  wrapper widget model value: true  fires the
+	   click. The same approach naturally selects radios / list rows /
+	   tabs whose model is a ValueHolder driven by the widget."
+	| r w err model oldVal result |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	oldVal := [model value] on: err do: [:ex | nil].
+	result := [model value: true. nil] on: err do: [:ex |
+		'{"error":"click_failed","message":"' , ex description , '"}'].
+	^result == nil
+		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","method":"model_value_true","oldValue":' , (self safeJsonFor: oldVal printString) , '}']
+		ifFalse: [result]!
+
+handleTypeBody: bodyString
+	"POST /type -- sets the widget's ValueHolder value."
+	| dict aspect winTitle val outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	aspect := dict at: 'aspect' ifAbsent: [nil].
+	val := dict at: 'value' ifAbsent: [dict at: 'text' ifAbsent: [nil]].
+	(aspect == nil or: [val == nil]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_params","need":"aspect and value"}'].
+	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
+	outcome := self onUIDo: [self doType: aspect value: val inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doType: aspect value: val inWindow: winTitle
+	"Runs on UI process. Returns a JSON string."
+	| r w err model result |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	result := [model value: val. nil] on: err do: [:ex |
+		'{"error":"set_failed","message":"' , ex description , '"}'].
+	^result == nil
+		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","value":' , (self safeJsonFor: val) , '}']
+		ifFalse: [result]!
+
+handleGetValueQuery: queryString
+	"GET /value?aspect=X[&windowTitle=Y]"
+	| aspect winTitle outcome |
+	aspect := self queryParam: 'aspect' from: queryString.
+	winTitle := self queryParam: 'windowTitle' from: queryString.
+	aspect == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"missing_aspect"}'].
+	outcome := self onUIDo: [self doGetValue: aspect inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doGetValue: aspect inWindow: winTitle
+	"Runs on UI process. Returns a JSON string."
+	| r w err model val |
+	err := self errorClass.
+	r := self resolveAspect: aspect inWindowMatching: winTitle.
+	(r at: 3) ~~ nil ifTrue: [^r at: 3].
+	w := r at: 2.
+	model := [w widget model] on: err do: [:ex | nil].
+	model == nil ifTrue: [
+		^'{"error":"no_model","aspect":"' , aspect , '"}'].
+	val := [model value] on: err do: [:ex | nil].
+	^'{"ok":true,"aspect":"' , aspect , '","value":' , (self safeJsonFor: val) , '}'!
+
+handlePutValueQuery: queryString body: bodyString
+	"PUT /value?aspect=X[&windowTitle=Y]  body: {""value"":...}
+	 Alternative to POST /type. Reuses the type machinery."
+	| aspect winTitle dict val outcome |
+	aspect := self queryParam: 'aspect' from: queryString.
+	winTitle := self queryParam: 'windowTitle' from: queryString.
+	dict := self jsonParseFlat: bodyString.
+	val := dict == nil ifTrue: [nil] ifFalse: [dict at: 'value' ifAbsent: [nil]].
+	(aspect == nil or: [val == nil]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_params","need":"aspect (query) and value (body)"}'].
+	outcome := self onUIDo: [self doType: aspect value: val inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^(outcome beginsWith: '{"ok":')
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+queryParam: paramName from: queryString
+	"Extract a query parameter (case-insensitive name) from a URL query string.
+	 Returns the URL-decoded value, or nil if missing."
+	| pairs target |
+	queryString isEmpty ifTrue: [^nil].
+	target := paramName asLowercase.
+	pairs := self split: queryString on: $&.
+	pairs do: [:pair |
+		| eq key value |
+		eq := pair indexOf: $=.
+		eq > 0 ifTrue: [
+			key := (pair copyFrom: 1 to: eq - 1) asLowercase.
+			key = target ifTrue: [
+				value := pair copyFrom: eq + 1 to: pair size.
+				^self urlDecode: value]]].
+	^nil!
+
+urlDecode: aString
+	"Tiny URL decoder: + -> space, %HH -> char(HH)."
+	| out i ch len err |
+	err := self errorClass.
+	out := Core.WriteStream on: Core.String new.
+	i := 1.
+	len := aString size.
+	[i <= len] whileTrue: [
+		ch := aString at: i.
+		ch = $+
+			ifTrue: [out nextPut: (Core.Character value: 32). i := i + 1]
+			ifFalse: [
+				(ch = $% and: [i + 2 <= len])
+					ifTrue: [
+						| hex byte |
+						hex := aString copyFrom: i + 1 to: i + 2.
+						byte := [Core.Integer readFrom: (Core.ReadStream on: hex) base: 16]
+							on: err do: [:ex | 32].
+						out nextPut: (Core.Character value: byte).
+						i := i + 3]
+					ifFalse: [
+						out nextPut: ch.
+						i := i + 1]]].
+	^out contents! !
+
+!VWBridge methodsFor: 'menu helpers'!
+
+extractLabelText: anObject
+	"Extract label text from a String or wrapper (LabelWithAccessor etc).
+	 IMPORTANT: LabelWithAccessor inherits Object>>displayString which
+	 returns printString - so displayString/text/string give us the
+	 wrapper's full description, NOT the wrapped label. Diagnostic-
+	 confirmed: lbl displayString returns 'LabelWithAccessor for
+	 ''Party & Contract''' (the printString) - a String that passes
+	 isString but is the wrong value.
+	 Strategy: parse the printString FIRST (works for the standard
+	 '... for ''X''' / '... ''X''' wrapper printString conventions),
+	 fall back to accessor chain only if no quoted segment is found
+	 (covers Symbols and plain wrappers).
+	 Uses (Core.Character value: 39) for the single-quote char because
+	 $' is unreliable in chunk file-in."
+	| err txt qch p1 p2 |
+	err := self errorClass.
+	anObject == nil ifTrue: [^''].
+	anObject isString ifTrue: [^anObject].
+	"PRIMARY: parse the printString for the first ''X'' quoted segment."
+	txt := [anObject printString] on: err do: [:ex | ''].
+	qch := Core.Character value: 39.
+	p1 := txt indexOf: qch.
+	p1 > 0 ifTrue: [
+		p2 := txt indexOf: qch startingAt: p1 + 1.
+		p2 > p1 ifTrue: [^txt copyFrom: p1 + 1 to: p2 - 1]].
+	"FALLBACK: only if printString had no quoted segment.
+	 result ~= txt guards against returning the same garbage."
+	#(displayString text string) do: [:sel |
+		(anObject respondsTo: sel) ifTrue: [
+			| result |
+			result := [anObject perform: sel] on: err do: [:ex | nil].
+			(result ~~ nil and: [result isString and: [result ~= txt]])
+				ifTrue: [^result]]].
+	^txt!
+
+menuItemsOf: aMenu
+	"Return the items of a Menu, or nil if not enumerable.
+	 VW Menu does NOT respond to #items (diagnostic-confirmed) - the
+	 correct selector is #menuItems. Tries menuItems/items/components
+	 in order so the helper survives future API drift."
+	| err result |
+	err := self errorClass.
+	aMenu == nil ifTrue: [^nil].
+	#(menuItems items components) do: [:sel |
+		(aMenu respondsTo: sel) ifTrue: [
+			result := [aMenu perform: sel] on: err do: [:ex | nil].
+			result ~~ nil ifTrue: [^result]]].
+	^nil!
+
+submenuOf: aMenuItem
+	"Return the submenu Menu of a MenuItem, or nil if none.
+	 Tries submenu/subMenu/menu in order - submenu is the standard VW
+	 accessor but kept tolerant for variant Menu item classes."
+	| err result |
+	err := self errorClass.
+	aMenuItem == nil ifTrue: [^nil].
+	#(submenu subMenu menu) do: [:sel |
+		(aMenuItem respondsTo: sel) ifTrue: [
+			result := [aMenuItem perform: sel] on: err do: [:ex | nil].
+			result ~~ nil ifTrue: [^result]]].
+	^nil!
+
+get: aSelector or: ivarName from: anObject
+	"Try the public accessor first; fall back to instVarNamed: if absent or
+	 if the accessor returns nil. Defensive against VW class evolution."
+	| err result |
+	err := self errorClass.
+	anObject == nil ifTrue: [^nil].
+	(anObject respondsTo: aSelector) ifTrue: [
+		result := [anObject perform: aSelector] on: err do: [:ex | nil].
+		result ~~ nil ifTrue: [^result]].
+	ivarName == nil ifTrue: [^nil].
+	^[anObject instVarNamed: ivarName] on: err do: [:ex | nil]!
+
+findMenuBarInWindowMatching: titleSubstring
+	"Walk ScheduledControllers; return the menuBar of the first window
+	 whose label contains titleSubstring. nil substring matches the first
+	 window that has a menuBar. Must run on UI process."
+	| mgr err matched |
+	err := self errorClass.
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [^nil].
+	matched := nil.
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
+		| view title titleOK mb |
+		matched == nil ifTrue: [
+			view := [ctrl view] on: err do: [:ex | nil].
+			view ~~ nil ifTrue: [
+				title := [view label asString] on: err do: [:ex | ''].
+				titleOK := titleSubstring == nil
+					or: [(title indexOfSubCollection: titleSubstring startingAt: 1) > 0].
+				titleOK ifTrue: [
+					mb := (view respondsTo: #menuBar)
+						ifTrue: [[view menuBar] on: err do: [:ex | nil]]
+						ifFalse: [nil].
+					mb ~~ nil ifTrue: [matched := mb]]]]].
+	^matched! !
+
+!VWBridge methodsFor: 'window tracking'!
+
+controllerSet
+	"Snapshot the currently-scheduled controllers as an IdentitySet.
+	 Used by action endpoints to diff window changes before vs after
+	 the action - so test runners know what windows the click opened
+	 or closed without having to poll /windows separately."
+	| mgr err set |
+	err := self errorClass.
+	set := Core.IdentitySet new.
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [^set].
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:c | set add: c].
+	^set!
+
+describeControllers: aCollection
+	"Describe each controller as a Dictionary with title / appClass /
+	 viewClass / bounds - same shape as /windows entries so callers can
+	 reuse their parsing."
+	| err result |
+	err := self errorClass.
+	result := Core.OrderedCollection new.
+	aCollection do: [:ctrl |
+		| d view app |
+		d := Core.Dictionary new.
+		view := [ctrl view] on: err do: [:ex | nil].
+		app := self applicationFor: ctrl.
+		d at: 'title' put: ([view label asString] on: err do: [:ex | nil]).
+		d at: 'appClass' put: (app == nil ifTrue: [nil] ifFalse: [app class name asString]).
+		d at: 'viewClass' put: (view == nil ifTrue: [nil] ifFalse: [view class name asString]).
+		d at: 'bounds' put: ([view displayBox printString] on: err do: [:ex | nil]).
+		result add: d].
+	^result!
+
+windowDiffBefore: beforeSet after: afterSet
+	"Compare two controller snapshots; return Dictionary
+	 { opened: [...], closed: [...] } - each list is full controller
+	 descriptions, ready to embed in a JSON response."
+	| opened closed d |
+	opened := Core.OrderedCollection new.
+	afterSet do: [:c | (beforeSet includes: c) ifFalse: [opened add: c]].
+	closed := Core.OrderedCollection new.
+	beforeSet do: [:c | (afterSet includes: c) ifFalse: [closed add: c]].
+	d := Core.Dictionary new.
+	d at: 'opened' put: (self describeControllers: opened).
+	d at: 'closed' put: (self describeControllers: closed).
+	^d! !
+
+!VWBridge methodsFor: 'menu trees'!
+
+menuTreeForMenuBar: aMenuBar
+	"Build an OrderedCollection of Dictionaries describing each top-level
+	 menu and its items recursively.
+	 Primary source: menuBar.menuChannel.menuItems - the abstract Menu held by
+	 the menuBar, whose entries are MenuItem objects with proper String
+	 labels (and populated submenus when available).
+	 Fallback: per-button menuHolder (used only if menuChannel is empty).
+	 Uses self menuItemsOf: / self submenuOf: helpers (VW Menu does not
+	 respond to #items - the right selector is #menuItems)."
+	| err buttons channel channelItems result |
+	err := self errorClass.
+	result := Core.OrderedCollection new.
+	channel := self get: #menuChannel or: 'menuChannel' from: aMenuBar.
+	channelItems := self menuItemsOf: channel.
+	(channelItems ~~ nil and: [channelItems isEmpty not]) ifTrue: [
+		channelItems doWithIndex: [:item :i |
+			| d label submenu subItems itemsCol |
+			d := Core.Dictionary new.
+			label := self extractLabelText: ([item label] on: err do: [:ex | nil]).
+			submenu := self submenuOf: item.
+			subItems := self menuItemsOf: submenu.
+			itemsCol := Core.OrderedCollection new.
+			subItems ~~ nil ifTrue: [
+				subItems doWithIndex: [:sub :j |
+					itemsCol add: (self menuItemTreeForItem: sub index: j depth: 1)]].
+			d at: 'index' put: i.
+			d at: 'label' put: label.
+			d at: 'items' put: itemsCol.
+			d at: 'source' put: 'menuChannel'.
+			result add: d].
+		^result].
+	"Fallback path."
+	buttons := self get: #menuButtons or: 'menuButtons' from: aMenuBar.
+	buttons == nil ifTrue: [^result].
+	buttons doWithIndex: [:btn :i |
+		| d label menuHolder items itemsCol |
+		d := Core.Dictionary new.
+		label := self extractLabelText: ([btn label] on: err do: [:ex | nil]).
+		menuHolder := self get: #menuHolder or: nil from: btn.
+		items := self menuItemsOf: menuHolder.
+		itemsCol := Core.OrderedCollection new.
+		items ~~ nil ifTrue: [
+			items doWithIndex: [:item :j |
+				itemsCol add: (self menuItemTreeForItem: item index: j depth: 1)]].
+		d at: 'index' put: i.
+		d at: 'label' put: label.
+		d at: 'items' put: itemsCol.
+		d at: 'source' put: 'menuHolder'.
+		result add: d].
+	^result!
+
+menuItemTreeForItem: anItem index: anIndex depth: aDepth
+	"Build a Dictionary describing one MenuItem - label + value (the
+	 perform: selector, nil for separators / submenu-openers) + recursively
+	 the items of its submenu (if any). Depth-capped at 8.
+	 Uses self submenuOf: / self menuItemsOf: helpers since VW Menu does
+	 not respond to #items."
+	| err d label value submenu items itemsCol |
+	err := self errorClass.
+	d := Core.Dictionary new.
+	label := self extractLabelText: ([anItem label] on: err do: [:ex | nil]).
+	value := [anItem value] on: err do: [:ex | nil].
+	submenu := self submenuOf: anItem.
+	items := self menuItemsOf: submenu.
+	itemsCol := Core.OrderedCollection new.
+	(items ~~ nil and: [aDepth < 8]) ifTrue: [
+		items doWithIndex: [:sub :j |
+			itemsCol add: (self menuItemTreeForItem: sub index: j depth: aDepth + 1)]].
+	d at: 'index' put: anIndex.
+	d at: 'label' put: label.
+	d at: 'value' put: (value == nil ifTrue: [nil] ifFalse: [value asString]).
+	d at: 'hasSubmenu' put: submenu ~~ nil.
+	d at: 'items' put: itemsCol.
+	^d! !
+
+!VWBridge methodsFor: 'menu dispatching'!
+
+handleMenuQuery: queryString
+	"GET /menu?windowTitle=X (windowTitle optional)."
+	| winTitle outcome |
+	winTitle := self queryParam: 'windowTitle' from: queryString.
+	outcome := self onUIDo: [self doMenuList: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	"Substring check (not beginsWith:) because jsonFor: on a Dictionary
+	 does NOT guarantee key order - '{""ok"":true,...' might be serialized
+	 as '{""menus"":[...],""ok"":true}' and beginsWith: would falsely 400."
+	^((outcome indexOfSubCollection: '"ok":true' startingAt: 1) > 0)
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doMenuList: winTitle
+	"Runs on UI process. Returns a JSON string."
+	| menuBar tree response err |
+	err := self errorClass.
+	menuBar := self findMenuBarInWindowMatching: winTitle.
+	menuBar == nil ifTrue: [^'{"error":"window_or_menubar_not_found"}'].
+	tree := [self menuTreeForMenuBar: menuBar] on: err do: [:ex |
+		^'{"error":"menu_walk_failed","message":"' , ex description , '"}'].
+	response := Core.Dictionary new.
+	response at: 'ok' put: true.
+	response at: 'menus' put: tree.
+	^self jsonFor: response!
+
+handleMenuClickBody: bodyString
+	"POST /menu/click  body: {""path"":[...,""leaf""],""windowTitle"":""X""}"
+	| dict pathArray winTitle outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	pathArray := dict at: 'path' ifAbsent: [nil].
+	(pathArray == nil
+		or: [(pathArray isKindOf: Core.Collection) not
+			or: [pathArray isEmpty]]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_or_empty_path"}'].
+	pathArray size < 2 ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"path_too_short","message":"top-level menu items just open submenus; need leaf with value"}'].
+	winTitle := dict at: 'windowTitle' ifAbsent: [dict at: 'window' ifAbsent: [nil]].
+	outcome := self onUIDo: [self doMenuClickPath: pathArray inWindow: winTitle].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^((outcome indexOfSubCollection: '"ok":true' startingAt: 1) > 0)
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doMenuClickPath: pathArray inWindow: winTitle
+	"Runs on UI process. Returns a JSON string.
+	 Dispatches based on the leaf MenuItem's value type:
+	   - Symbol         : performer perform: symbol  (classic MVC menu action)
+	   - BlockClosure   : leafValue value             (MAS menus mostly use this -
+	                      block closures built by Menu>>addItemLabel:withOperation:
+	                      that capture the action via lexical scope)
+	   - anything else  : reject with unsupported_leaf_value
+	 Snapshots scheduled controllers before + after the dispatch so the
+	 response can tell the caller which windows the click opened/closed."
+	| menuBar walked leafItem performer leafValue err result response dispatch blockCls
+	  beforeSet afterSet windowsInfo |
+	err := self errorClass.
+	menuBar := self findMenuBarInWindowMatching: winTitle.
+	menuBar == nil ifTrue: [^'{"error":"window_or_menubar_not_found"}'].
+	walked := self walkMenuPath: pathArray inMenuBar: menuBar.
+	(walked at: 3) ~~ nil ifTrue: [^walked at: 3].
+	leafItem := walked at: 1.
+	performer := walked at: 2.
+	leafValue := [leafItem value] on: err do: [:ex | nil].
+	leafValue == nil ifTrue: [
+		^'{"error":"leaf_has_no_value","path_label":' , (self jsonFor: pathArray last) , '}'].
+	dispatch := nil.
+	leafValue isSymbol ifTrue: [dispatch := 'perform'].
+	dispatch == nil ifTrue: [
+		blockCls := self globalNamed: #BlockClosure.
+		(blockCls ~~ nil and: [leafValue isKindOf: blockCls])
+			ifTrue: [dispatch := 'block']].
+	dispatch == nil ifTrue: [
+		^'{"error":"unsupported_leaf_value","class":"' , leafValue class name asString ,
+			'","value":' , (self jsonFor: leafValue printString) , '}'].
+	beforeSet := self controllerSet.
+	result := dispatch = 'perform'
+		ifTrue: [
+			[performer perform: leafValue. nil] on: err do: [:ex |
+				'{"error":"perform_failed","selector":' , (self jsonFor: leafValue asString) ,
+					',"message":' , (self jsonFor: ex description) , '}']]
+		ifFalse: [
+			[leafValue value. nil] on: err do: [:ex |
+				'{"error":"block_eval_failed","message":' , (self jsonFor: ex description) , '}']].
+	result ~~ nil ifTrue: [^result].
+	afterSet := self controllerSet.
+	windowsInfo := self windowDiffBefore: beforeSet after: afterSet.
+	response := Core.Dictionary new.
+	response at: 'ok' put: true.
+	response at: 'path' put: pathArray asArray.
+	response at: 'dispatch' put: dispatch.
+	response at: 'leafValue' put: leafValue printString.
+	response at: 'performer' put: performer class name asString.
+	response at: 'windows' put: windowsInfo.
+	^self jsonFor: response!
+
+walkMenuPath: pathArray inMenuBar: aMenuBar
+	"Walk pathArray (Collection of Strings) through menuBar.menuChannel.menuItems
+	 recursively. Each segment matches an item by label (against
+	 extractLabelText:), then descends via self submenuOf: -> menuItemsOf:.
+	 Returns Core.Array {leafItem, performer, errorJSON}. Exactly one of
+	 {leafItem+performer, errorJSON} is non-nil.
+	 Uses self menuItemsOf: / self submenuOf: helpers since VW Menu does
+	 not respond to #items."
+	| err performer channel currentMenu currentItem i seg items |
+	err := self errorClass.
+	performer := self get: #performer or: 'performer' from: aMenuBar.
+	performer == nil ifTrue: [
+		^Core.Array with: nil with: nil with: '{"error":"no_performer"}'].
+	channel := self get: #menuChannel or: 'menuChannel' from: aMenuBar.
+	channel == nil ifTrue: [
+		^Core.Array with: nil with: nil with: '{"error":"no_menu_channel"}'].
+	currentMenu := channel.
+	currentItem := nil.
+	i := 1.
+	[i <= pathArray size] whileTrue: [
+		currentMenu == nil ifTrue: [
+			^Core.Array with: nil with: nil with:
+				('{"error":"no_submenu","at_segment":' , (i - 1) printString , '}')].
+		seg := pathArray at: i.
+		currentItem := nil.
+		items := self menuItemsOf: currentMenu.
+		items ~~ nil ifTrue: [
+			items do: [:item |
+				| label |
+				currentItem == nil ifTrue: [
+					label := self extractLabelText: ([item label] on: err do: [:ex | nil]).
+					label = seg ifTrue: [currentItem := item]]]].
+		currentItem == nil ifTrue: [
+			^Core.Array with: nil with: nil with:
+				('{"error":"item_not_found","seg":' , (self jsonFor: seg) , ',"at_segment":' , i printString , '}')].
+		i < pathArray size ifTrue: [currentMenu := self submenuOf: currentItem].
+		i := i + 1].
+	^Core.Array with: currentItem with: performer with: nil! !
+
+!VWBridge methodsFor: 'eval'!
+
+handleEvalBody: bodyString
+	"POST /eval - evaluate arbitrary Smalltalk source via Compiler.
+	 Runs on the bridge's serve process; UI-touching code must wrap itself
+	 (see top docstring). Returns JSON.
+	 Empty body -> 400 empty_body.
+	 Compile / runtime error -> 400 eval_failed with the exception description.
+	 Success -> 200 ok=true result=<printString of evaluated expression>."
+	| err result compiler printed |
+	err := self errorClass.
+	(bodyString == nil or: [bodyString isEmpty]) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"empty_body"}'].
+	compiler := self globalNamed: #Compiler.
+	compiler == nil ifTrue: [
+		^self httpResponse: 500 type: 'application/json'
+			body: '{"error":"no_compiler"}'].
+	result := [compiler evaluate: bodyString] on: err do: [:ex |
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"eval_failed","message":' ,
+				(self safeJsonFor: ex description) , '}'].
+	printed := [result printString] on: err do: [:ex | 'PRINT_FAILED'].
+	^self httpResponse: 200 type: 'application/json'
+		body: '{"ok":true,"result":' , (self safeJsonFor: printed) , '}'! !
+
+!VWBridge methodsFor: 'dialogs'!
+
+handleDialogsQuery
+	"GET /dialogs - enumerate live SimpleDialog modals.
+	 Returns 200 with {ok:true, dialogs:[...]}. Empty array if no live
+	 modal OR if Dialog usesNativeDialogs is still true (native dialogs
+	 are invisible to VW introspection - run
+	   Dialog useNativeDialogs: false
+	 via POST /eval after image restart to enable detection)."
+	| outcome |
+	outcome := self onUIDo: [self doListDialogs].
+	outcome == nil ifTrue: [outcome := '{"ok":false,"error":"ui_timeout","dialogs":[]}'].
+	^self httpResponse: 200 type: 'application/json' body: outcome!
+
+doListDialogs
+	"Runs on UI process. Returns JSON string.
+	 Enumerates SimpleDialog instances that are LIVE (i.e. in
+	 ScheduledControllers - have an open window). Filtering this way
+	 (instead of via SimpleDialog allInstances) automatically excludes
+	 stale instances and the dialogSupplier singleton."
+	| err dialogs response sdClass mgr |
+	err := self errorClass.
+	sdClass := self globalNamed: #SimpleDialog.
+	sdClass == nil ifTrue: [
+		^'{"ok":false,"error":"no_simple_dialog_class","dialogs":[]}'].
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [
+		^'{"ok":false,"error":"no_scheduled_controllers","dialogs":[]}'].
+	dialogs := Core.OrderedCollection new.
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
+		([ctrl model class == sdClass] on: err do: [:ex | false]) ifTrue: [
+			dialogs add: (self describeDialog: ctrl model)]].
+	response := Core.Dictionary new.
+	response at: 'ok' put: true.
+	response at: 'dialogs' put: dialogs.
+	^self jsonFor: response!
+
+describeDialog: aSimpleDialog
+	"Build a Dictionary describing one live SimpleDialog: id, message text,
+	 button labels (extracted from ActionButtonSpec widgets in
+	 namedComponents).
+	 Message text extraction: spec.label may be String, Text, or
+	 ComposedText - all respond to #asString returning the raw text.
+	 Older versions tried widget.model.value which errored on ComposedText."
+	| d err builder comps msg btnLabels msgWidget |
+	err := self errorClass.
+	d := Core.Dictionary new.
+	d at: 'id' put: ([aSimpleDialog identityHash printString] on: err do: [:ex | nil]).
+	builder := [aSimpleDialog builder] on: err do: [:ex | nil].
+	msg := nil.
+	btnLabels := Core.OrderedCollection new.
+	builder ~~ nil ifTrue: [
+		comps := [builder namedComponents] on: err do: [:ex | nil].
+		comps ~~ nil ifTrue: [
+			"Message text via displayMessageString aspect."
+			msgWidget := [comps at: #displayMessageString ifAbsent: [nil]] on: err do: [:ex | nil].
+			msgWidget ~~ nil ifTrue: [
+				msg := [msgWidget spec label asString] on: err do: [:ex | nil]].
+			"Button labels - iterate ActionButtonSpec widgets defensively
+			 (same valuesDo:/do: fallback as resolveAspect:)."
+			(comps respondsTo: #valuesDo:)
+				ifTrue: [
+					comps valuesDo: [:w |
+						([w spec class name asString = 'ActionButtonSpec'] on: err do: [:ex | false])
+							ifTrue: [
+								btnLabels add: ([w spec label asString] on: err do: [:ex | nil])]]]
+				ifFalse: [
+					(comps respondsTo: #do:) ifTrue: [
+						comps do: [:w |
+							([w spec class name asString = 'ActionButtonSpec'] on: err do: [:ex | false])
+								ifTrue: [
+									btnLabels add: ([w spec label asString] on: err do: [:ex | nil])]]]]]].
+	d at: 'message' put: msg.
+	d at: 'buttons' put: btnLabels asArray.
+	^d!
+
+handleDialogsRespondBody: bodyString
+	"POST /dialogs/respond - dispatch a button click on the live modal.
+	 Body: {""choice"":""Yes""|""No""|""OK""|""Cancel""|""Accept""|""Decline""}
+	 SINGLE-SHOT: clicking No on a search-confirm modal may pop a
+	 second cascading modal (e.g. ""Search cancelled"" with OK). The
+	 caller orchestrates: respond, GET /dialogs, respond again, until
+	 /dialogs returns empty."
+	| dict choice outcome |
+	dict := self jsonParseFlat: bodyString.
+	dict == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json' body: '{"error":"invalid_json"}'].
+	choice := dict at: 'choice' ifAbsent: [nil].
+	choice == nil ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"missing_choice","need":"choice: Yes|No|OK|Cancel|Accept|Decline"}'].
+	outcome := self onUIDo: [self doRespondDialog: choice].
+	outcome == nil ifTrue: [outcome := '{"error":"ui_timeout"}'].
+	^((outcome indexOfSubCollection: '"ok":true' startingAt: 1) > 0)
+		ifTrue: [self httpResponse: 200 type: 'application/json' body: outcome]
+		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
+
+doRespondDialog: choice
+	"Runs on UI process. Finds the live SimpleDialog ScheduledController,
+	 records the outcome via accept/cancel ValueHolders, then
+	 closeAndUnschedule. closeAndUnschedule bypasses the wedged modal
+	 loop - the loop notices the window-gone signal on its next
+	 iteration (typically immediate because the OS-close event wakes it
+	 up). Setting accept/cancel alone from a foreign process doesn't
+	 reliably wake the modal loop, so closeAndUnschedule is essential."
+	| err choiceStr sdClass mgr target wantsAccept wantsCancel |
+	err := self errorClass.
+	sdClass := self globalNamed: #SimpleDialog.
+	sdClass == nil ifTrue: [
+		^'{"ok":false,"error":"no_simple_dialog_class"}'].
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [
+		^'{"ok":false,"error":"no_scheduled_controllers"}'].
+	target := [mgr scheduledControllers detect: [:c |
+		[c model class == sdClass] on: err do: [:ex | false]
+	] ifNone: [nil]] on: err do: [:ex | nil].
+	target == nil ifTrue: [
+		^'{"ok":false,"error":"no_live_dialog","hint":"Dialog useNativeDialogs may still be true - use POST /eval to toggle off"}'].
+	choiceStr := choice asString.
+	wantsAccept := (choiceStr = 'Yes') or: [(choiceStr = 'OK') or: [choiceStr = 'Accept']].
+	wantsCancel := (choiceStr = 'No') or: [(choiceStr = 'Cancel') or: [choiceStr = 'Decline']].
+	"Record outcome on the model's accept/cancel ValueHolders."
+	wantsAccept ifTrue: [
+		[target model accept value: true] on: err do: [:ex | nil]].
+	wantsCancel ifTrue: [
+		[target model cancel value: true] on: err do: [:ex | nil]].
+	"Force close at the controller level - this wakes the modal loop."
+	[target closeAndUnschedule] on: err do: [:ex |
+		^'{"ok":false,"error":"close_failed","message":' , (self safeJsonFor: ex description) , '}'].
+	^'{"ok":true,"choice":' , (self safeJsonFor: choiceStr) ,
+		',"method":"closeAndUnschedule","recordedAccept":' , wantsAccept printString ,
+		',"recordedCancel":' , wantsCancel printString , '}'! !
+
 !VWBridge methodsFor: 'ui process'!
 
 onUIDo: aBlock
 	"Run aBlock on the UI process when possible; otherwise run it directly
-	 (acceptable for read-only traversal)."
+	 (acceptable for read-only traversal). 5-second watchdog timeout."
 	| mgr uiProc result sem proc |
 	mgr := self globalNamed: #ScheduledControllers.
 	uiProc := mgr == nil
@@ -376,6 +1240,143 @@ jsonString: aString
 	out nextPut: $".
 	^out contents! !
 
+!VWBridge methodsFor: 'json parsing'!
+
+jsonParseFlat: aString
+	"Minimal JSON parser. Returns Dictionary keyed by String, values are
+	 String / Number / Boolean / nil / Array (via parseArray:). FLAT
+	 objects only - no nested objects (none needed for our request
+	 bodies). nil on parse error.
+	 Uses a 1-element-Core.Array cursor because VW forbids assigning to
+	 method args."
+	| cursor c dict key val |
+	aString isEmpty ifTrue: [^nil].
+	cursor := Core.Array with: 1.
+	self skipWs: aString cursor: cursor.
+	c := self peek: aString cursor: cursor.
+	c = ${ ifFalse: [^nil].
+	self advance: cursor.
+	dict := Core.Dictionary new.
+	[self skipWs: aString cursor: cursor.
+	 c := self peek: aString cursor: cursor.
+	 c ~~ nil and: [c ~= $}]] whileTrue: [
+		key := self parseQuotedString: aString cursor: cursor.
+		key == nil ifTrue: [^nil].
+		self skipWs: aString cursor: cursor.
+		(self peek: aString cursor: cursor) = $: ifFalse: [^nil].
+		self advance: cursor.
+		self skipWs: aString cursor: cursor.
+		val := self parseAnyValue: aString cursor: cursor.
+		dict at: key put: val.
+		self skipWs: aString cursor: cursor.
+		(self peek: aString cursor: cursor) = $, ifTrue: [self advance: cursor]].
+	(self peek: aString cursor: cursor) == nil ifTrue: [^nil].
+	self advance: cursor.
+	^dict!
+
+advance: cursor
+	cursor at: 1 put: (cursor at: 1) + 1!
+
+peek: aString cursor: cursor
+	| i |
+	i := cursor at: 1.
+	i > aString size ifTrue: [^nil].
+	^aString at: i!
+
+skipWs: aString cursor: cursor
+	[| c |
+	 c := self peek: aString cursor: cursor.
+	 c ~~ nil
+		and: [c = (Core.Character value: 32)
+			or: [c = (Core.Character value: 9)
+				or: [c = (Core.Character value: 10)
+					or: [c = (Core.Character value: 13)]]]]]
+		whileTrue: [self advance: cursor]!
+
+parseQuotedString: aString cursor: cursor
+	"At opening quote. Returns the string content (no quotes), or nil on error."
+	| out c esc |
+	(self peek: aString cursor: cursor) = $" ifFalse: [^nil].
+	self advance: cursor.
+	out := Core.WriteStream on: Core.String new.
+	[c := self peek: aString cursor: cursor.
+	 c ~~ nil and: [c ~= $"]] whileTrue: [
+		c = $\
+			ifTrue: [
+				self advance: cursor.
+				esc := self peek: aString cursor: cursor.
+				esc == nil ifTrue: [^nil].
+				esc = $n ifTrue: [out nextPut: (Core.Character value: 10)].
+				esc = $t ifTrue: [out nextPut: (Core.Character value: 9)].
+				esc = $r ifTrue: [out nextPut: (Core.Character value: 13)].
+				(esc = $" or: [esc = $\ or: [esc = $/]]) ifTrue: [out nextPut: esc].
+				self advance: cursor]
+			ifFalse: [
+				out nextPut: c.
+				self advance: cursor]].
+	c == nil ifTrue: [^nil].
+	self advance: cursor.
+	^out contents!
+
+parseAnyValue: aString cursor: cursor
+	"Parse a JSON value (whitespace already skipped). Returns the value
+	 or nil. Note: a parsed JSON null also yields nil - callers should
+	 not distinguish missing-key from explicit-null.
+	 Supports: string / array / true / false / null / number.
+	 (Nested objects not supported - flat-object requests only.)"
+	| c start end |
+	c := self peek: aString cursor: cursor.
+	c == nil ifTrue: [^nil].
+	c = $" ifTrue: [^self parseQuotedString: aString cursor: cursor].
+	c = $[ ifTrue: [^self parseArray: aString cursor: cursor].
+	c = $t ifTrue: [^self matchKeyword: 'true' as: true in: aString cursor: cursor].
+	c = $f ifTrue: [^self matchKeyword: 'false' as: false in: aString cursor: cursor].
+	c = $n ifTrue: [^self matchKeyword: 'null' as: nil in: aString cursor: cursor].
+	start := cursor at: 1.
+	[c := self peek: aString cursor: cursor.
+	 c ~~ nil
+		and: [(c between: $0 and: $9)
+			or: [c = $- or: [c = $+ or: [c = $. or: [c = $e or: [c = $E]]]]]]]
+		whileTrue: [self advance: cursor].
+	end := (cursor at: 1) - 1.
+	end < start ifTrue: [^nil].
+	^[(aString copyFrom: start to: end) asNumber] on: self errorClass do: [:ex | nil]!
+
+parseArray: aString cursor: cursor
+	"At opening [. Returns OrderedCollection of values, or nil on error.
+	 Supports nested arrays + all scalar value types via parseAnyValue:."
+	| arr c |
+	(self peek: aString cursor: cursor) = $[ ifFalse: [^nil].
+	self advance: cursor.
+	arr := Core.OrderedCollection new.
+	self skipWs: aString cursor: cursor.
+	c := self peek: aString cursor: cursor.
+	[c ~~ nil and: [c ~= $]]] whileTrue: [
+		| val |
+		val := self parseAnyValue: aString cursor: cursor.
+		arr add: val.
+		self skipWs: aString cursor: cursor.
+		(self peek: aString cursor: cursor) = $, ifTrue: [self advance: cursor].
+		self skipWs: aString cursor: cursor.
+		c := self peek: aString cursor: cursor].
+	c == nil ifTrue: [^nil].
+	self advance: cursor.
+	^arr!
+
+matchKeyword: kw as: value in: aString cursor: cursor
+	"Consume the literal kw if it matches at cursor; return value. Else nil."
+	| i len |
+	i := cursor at: 1.
+	len := kw size.
+	(i + len - 1) > aString size ifTrue: [^nil].
+	(aString copyFrom: i to: i + len - 1) = kw ifFalse: [^nil].
+	cursor at: 1 put: i + len.
+	^value!
+
+safeJsonFor: anObject
+	"Wrap jsonFor: in an error handler. Returns 'null' on any failure."
+	^[self jsonFor: anObject] on: self errorClass do: [:ex | 'null']! !
+
 !VWBridge methodsFor: 'http'!
 
 httpResponse: code type: contentType body: bodyString
@@ -386,7 +1387,19 @@ httpResponse: code type: contentType body: bodyString
 		ifFalse: [
 			code = 400
 				ifTrue: ['Bad Request']
-				ifFalse: [code = 404 ifTrue: ['Not Found'] ifFalse: ['Error']]].
+				ifFalse: [
+					code = 401
+						ifTrue: ['Unauthorized']
+						ifFalse: [
+							code = 404
+								ifTrue: ['Not Found']
+								ifFalse: [
+									code = 405
+										ifTrue: ['Method Not Allowed']
+										ifFalse: [
+											code = 500
+												ifTrue: ['Internal Server Error']
+												ifFalse: ['Error']]]]]].
 	out := Core.WriteStream on: Core.String new.
 	out nextPutAll: 'HTTP/1.1 ' , code printString , ' ' , reason; nextPutAll: crlf.
 	out nextPutAll: 'Content-Type: ' , contentType; nextPutAll: crlf.
@@ -397,5 +1410,16 @@ httpResponse: code type: contentType body: bodyString
 	out nextPutAll: bodyString.
 	^out contents! !
 
-"AUTO-START ON FILE-IN"
-VWBridge start!
+"=== Auto-start the bridge on file-in and write .token for agent pickup ==="
+| f tokenPath |
+VWBridge stop.
+VWBridge start.
+tokenPath := 'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\.token'.
+f := [tokenPath asFilename writeStream] on: Core.Error do: [:ex | nil].
+f == nil
+	ifTrue: [Transcript cr; show: 'WARN: could not write .token file (', tokenPath, ') - copy token manually from Transcript'; cr]
+	ifFalse: [
+		[f lineEndTransparent] on: Core.Error do: [:ex | nil].
+		f nextPutAll: VWBridge singleton token.
+		f close.
+		Transcript cr; show: 'Token written to .token: '; show: VWBridge singleton token; cr]!
