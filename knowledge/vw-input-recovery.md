@@ -2,6 +2,13 @@
 
 What to do when VW input locks up — you can't click on the image, windows don't respond, etc.
 
+> **STATUS (2026-06-20 session-10):** The original wedge-accumulation failure mode that motivated this doc is **largely prevented in v0.8.11+** via the bridge's automatic `purgeWedgedDialogProcesses` call from `/dialogs/respond` (see [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) Bug #2 session-6 / v0.8.11 fix). Each dialog dismissal now cleans up its own wedged modal-loop fork. The postmortem in [§ "How we got into this state"](#how-we-got-into-this-state-postmortem-from-session-2026-06-19) describes the pre-v0.8.11 behavior. **You can still wedge the bridge** by:
+>   - Running SUnit `suite run` with multiple modal-forking tests in one /eval (session-10 lesson — run /eval-friendly subset only, or use Workspace for the full suite)
+>   - Calling `Dialog confirm:` / `Dialog request:` / `Dialog warn:` directly from /eval (the serve-process gets wedged inside the modal wait — `purgeWedgedDialogProcesses` from a DIFFERENT serve-process can recover it)
+>   - Stacking modals faster than the bridge processes dismiss requests
+>
+> When wedged: try Levels 1-3 below. If Level 3 (bridge restart via re-file-in) doesn't recover (image gone), Level 4 (vwnt.exe restart) loses image state.
+
 ## Symptoms
 
 - Mouse clicks on VW windows don't register
@@ -154,6 +161,8 @@ When in-image recovery has failed:
    ```
 
 ## How we got into this state (postmortem from session 2026-06-19)
+
+> Pre-v0.8.11 behavior. The wedge-accumulation pattern described here is largely prevented in v0.8.11+ (`purgeWedgedDialogProcesses` auto-called from `/dialogs/respond`). Kept for archaeology.
 
 A test cycle accumulated wedged `/click` jobs without ever cleanly restarting the bridge. Each `/click findID` that hit a modal:
 - Forked a serve-process (Phase B+1.A) that waited indefinitely on the modal
