@@ -86,7 +86,7 @@ Bonus implication: the `searchCriteriaType` value verified ON ROUND-TRIP (`/eval
 
 ---
 
-## Bug #2: `Dialog confirm:` dismissal via `closeAndUnschedule` doesn't propagate properly
+## Bug #2: `Dialog confirm:` dismissal via `closeAndUnschedule` doesn't propagate properly (PARTIALLY MITIGATED in v0.8.11)
 
 **Discovered:** session 2026-06-19 PM, while testing Party Search end-to-end.
 
@@ -295,7 +295,105 @@ Given that `close value=true` already and the modal still doesn't exit cleanly v
 2. **Investigate what partialFind: wraps Dialog confirm: in.** Bug #2 ONLY affects the partialFind: + Dialog confirm: combination — standalone confirm works. Something in partialFind: changes the modal's return semantics. Could be a `withWaitCursor:`, a `Cursor wait showWhile:`, an `ensure:` block, or some transaction/exception-handler context. Without source access this is empirical — instrument fresh forks and bisect.
 3. **Stage 3 (still valid)**: Guard `/eval` against bodies containing `Dialog confirm:` / `Dialog request:` / `Dialog warn:`. These hang the bridge's serve-process even with Bug #5's v0.8.8 per-process re-entry guard, because the hang is in the UI modal loop, not the dispatcher.
 
-### Proposed fix (Phase B+1 or Phase C)
+### Session-6 investigation findings + v0.8.11 partial fix (2026-06-20)
+
+**Status: PARTIALLY MITIGATED in v0.8.11. Symptom A (partialMatchResults never populates) PERSISTS but is now RECOVERABLE (no silent wedges, no accumulating debugger windows).**
+
+Session-6 attempted Direction A (simulate YesButton click) first, then pivoted to Direction B (investigate the wrap) when Direction A required OS event construction this image's API doesn't simply expose. Direction B yielded the architectural root cause AND a partial fix that ships in v0.8.11.
+
+#### The wrap is in the dialog framework, not partialFind:
+
+Session-5's Direction B hypothesis was that `partialFind:` wraps `Dialog confirm:` in something that breaks the return. Session-6 disproved that by stack-walking the wedged fork process in BOTH standalone `Dialog confirm:` AND `partialFind:` scenarios. The wrap is IDENTICAL and lives in the dialog framework:
+
+```
+ScheduledWindow>>openTransientIn:type:postOpen:
+  ApplicationDialogController>>openTransientViews
+    Cursor>>showWhile:                            ← THE WRAP
+      BlockClosure>>openTransientViews
+        BlockClosure>>ensure:
+          BlockClosure>>openTransientViews
+            ApplicationDialogController>>startUp
+              ...
+                ApplicationDialogController>>eventLoop
+                  WindowManager>>processNextEvent
+                    EventQueue>>next
+                      Semaphore>>waitIfCurtailedSignal  ← stuck here
+```
+
+`Dialog confirm:` itself runs inside `Cursor showWhile:` + nested `ensure:` blocks. This is the FRAMEWORK's wrap, not the caller's. Both standalone confirms and partialFind: confirms wedge IDENTICALLY when dismissed via `closeAndUnschedule`.
+
+#### Session-5's "standalone returns true" was misleading
+
+Session-5 captured `BUG2_RESULT = {class:'True', isTrue:true}` for a standalone `Dialog confirm:` fork — but didn't document the dismissal mechanism. Session-6 confirmed the bridge's `/dialogs/respond Yes` (which does `accept value: true + closeAndUnschedule`) ALSO leaves a standalone fork wedged silently forever (no MustBeBoolean, no debugger, just hung — captured as `B_TEST1_RET = 'nil-returned'` AFTER manual `wm.purgeDeadWindows` unwedged it). Session-5's "true" return must have been from a manual user click — bridge dismissal returns nil for standalone too.
+
+The difference between standalone and partialFind: outcomes is COSMETIC, not structural:
+- **Standalone**: fork wedges silently forever; nothing downstream checks the (nil) return; image accumulates wedged procs across calls
+- **partialFind:**: fork wedges, then eventually escapes (mechanism unclear — possibly MAS-side timer); `(Dialog confirm:) ifTrue:` raises MustBeBoolean; debugger window opens (invisible to `/dialogs`); MustBeBoolean catchable by `on:do:`
+
+#### Why closeAndUnschedule leaves the fork wedged
+
+`closeAndUnschedule` destroys the OS window but does NOT push a Destroy event into the fork's `WindowManager` `EventQueue`. The fork's modal loop is blocked at `Semaphore>>waitIfCurtailedSignal` waiting for the next event. After closeAndUnschedule:
+- Window is gone
+- EventQueue has no pending events
+- Semaphore stays unsignaled
+- Loop never returns from `EventQueue>>next`
+
+Signaling the Semaphore alone doesn't help — the loop wakes, finds no event, re-sleeps on the next semaphore (verified empirically — `sema signal` and 6x signal both ineffective).
+
+#### v0.8.11 fix: `purgeWedgedDialogProcesses`
+
+The bridge's `doRespondDialog:` now calls a new helper after `closeAndUnschedule`:
+
+```smalltalk
+purgeWedgedDialogProcesses
+    "Find any Process suspended inside ApplicationDialogController>>eventLoop
+     and call purgeDeadWindows on its WindowManager. Wakes the wedged modal loop."
+    "(see VWBridge.st L1392 for full implementation)"
+```
+
+How it works:
+1. Walk `Process allInstances` (~200-300 procs in this image, fast filter)
+2. Select: top stack contains `ApplicationDialogController` as a receiver
+3. For each match: walk the stack to find a `WindowManager` receiver
+4. Send `purgeDeadWindows` to that WindowManager
+5. Return count of purged-and-unwedged procs (response JSON: `"purgedWedged": N`)
+
+When the WindowManager purges its dead windows, the modal loop notices its `scheduledWindows` is empty and exits. The fork's `Dialog confirm:` returns (with **nil**, NOT the accept value — see "remaining limitation" below) and the fork's stack unwinds normally.
+
+#### NEW SELECTOR DISCOVERIES from session-6 probing
+
+- **`Process allInstances`** — works in this image (returns 247 processes); `Processor allProcesses` does NOT exist (session-3 was right) but `Process allInstances` is a viable substitute for process enumeration
+- **`WindowManager`** has `#close`, `#purgeDeadWindows`, `#unscheduleModalWindow:`, `#addEvent:`, `#scheduleModalWindow:`, `#processOutstandingEvents`, `#purgeInvalidWindows`
+- **`EventQueue`** has `#nextPut:`, `#nextPutAtFrontOfQueue:`
+- **`EventSensor`** has `#eventButtonPress:`, `#eventButtonRelease:`, `#eventBlueButtonPress:`, `#eventBlueButtonRelease:`, `#eventDamage:`, `#eventDestroy:`, `#eventDoubleClick:`, `#anyButtonPressed`, `#addMetaInput:` — full OS event injection API
+- **`sdCtrl`** (ApplicationDialogController) has **`#closeDrainEventsAndUnschedule`** — closes WITHOUT MustBeBoolean BUT leaves fork wedged (strictly worse than closeAndUnschedule because no visible failure either); NOT used in v0.8.11
+- **`ActionButtonView`** has `#guiSimulateMouseClick` — calls non-existent `#simulateMousePress`; the wrapper exists but the primitive doesn't (stripped or missing pundle); dead end in this image
+- **`SimpleDialog`** has methods: `#accept`, `#cancel`, `#close`, `#closeAccept`, `#closeCancel`, `#closeRequest`, `#closeAndUnschedule` — ALL no-ops cross-process (calling from serve process does NOT dismiss; modal loop polls EventQueue, not these ivars)
+- **`spec model`** (on ActionButtonSpec for YesButton) IS a `BlockClosure` defined in `SimpleDialog>>addLabels:values:default:storeInto:takeKeyboard:equalize:columns:` — but evaluating it (`spec model value`) returns `self` (the SimpleDialog) with no observable side effect; the BlockClosure is not the actual click action handler
+- **`mgr activeControllerProcess`** returns nil during modals (which is why bridge's `onUIDo:` falls back to direct execution for modal work — confirmed by reading L1372 of VWBridge.st)
+
+#### What v0.8.11 fixes
+
+| Scenario | Pre-v0.8.11 | v0.8.11 |
+|---|---|---|
+| Standalone `Dialog confirm:` + bridge respond Yes | SILENT FOREVER WEDGE (worst — invisible) | Fork unwedges cleanly; Dialog confirm: returns nil |
+| `partialFind: + Dialog confirm:` + bridge respond Yes | MustBeBoolean → invisible debugger window (session-5 finding) | Fork unwedges; MustBeBoolean catchable by caller's `on:do:` |
+| Image hygiene across multiple respond Yes calls | Wedged procs accumulate, image needs `vwnt.exe` restart | No accumulation; each respond Yes cleans up its wedged proc |
+| `/dialogs/respond` JSON response | `{ok:true, method:"closeAndUnschedule", recordedAccept:bool, recordedCancel:bool}` | `{..., method:"closeAndUnschedule+purgeDeadWindows", purgedWedged:N}` |
+
+#### What v0.8.11 does NOT fix (Symptom A remains)
+
+`Dialog confirm:` still returns **nil** when dismissed externally. The dialog framework's force-close return path is hardcoded; setting `accept value: true` before `closeAndUnschedule` does NOT propagate (verified — `accept value` stays true at exit but `Dialog confirm:` returns nil regardless). For partialFind:'s `(Dialog confirm:) ifTrue: [search-code]` pattern this still raises MustBeBoolean and the `search-code` does NOT run.
+
+`partialMatchResults` therefore still stays `nil` after `/dialogs/respond Yes`. The workaround in [`vw-party-search.md`](./vw-party-search.md) — bypass `partialFind:` and call `ContractManager default contractNumbersContaining:` directly — **REMAINS REQUIRED** for `#contractNumber` and `#surname`.
+
+#### Remaining paths for a full Symptom A fix (session-7+)
+
+1. **OS event injection** via `sensor eventButtonPress:` + `sensor eventButtonRelease:` constructing a real `MouseButtonEvent` on YesButton's bounds. The sensor has the API; constructing the right event object requires probing the event class — `MouseButtonEvent`, `ButtonPressedEvent`, `RedButtonPressedEvent`, `InputEvent`, `UIEvent` are NOT in `Root.Smalltalk` globals as of session-6 (probed all 7 candidates). Look in pundles like `UIPainter` or `EventManager`, or `getPerformerIn:` from spec.
+2. **MAS-side override**: extend `Dialog class>>confirm:` (or a parallel method) to read `dialog accept value` at force-close instead of returning the framework default. Requires MAS-side commit, not bridge. Lowest-risk if MAS team is willing.
+3. **Process surgery**: walk the wedged fork's stack to its modal loop frame, mutate the return value or unwind the stack with a value-carrying exception before resuming. Brittle, image-version-specific, not recommended.
+
+Direction A's original "simulate click" intent is achievable via #1 but is significantly more complex than the handoff anticipated. Session-6's verdict: ship the v0.8.11 partial fix now (real improvement, low risk, no behavior regressions); plan #1 or #2 for session-7+ if Bug #2 full fix is still desired.
 
 ---
 
