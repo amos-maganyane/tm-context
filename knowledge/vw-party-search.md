@@ -1,6 +1,6 @@
 # PartySearchView via the bridge
 
-How to drive MAS's PartySearchView end-to-end through the v0.8.5 bridge, including workarounds for the two bridge bugs that affect this surface ([Bug #1 RadioButtonSpec](./vw-bridge-known-issues.md#bug-1-click-on-radiobuttonspec-writes-literal-true-instead-of-specselect), [Bug #2 Dialog confirm: return](./vw-bridge-known-issues.md#bug-2-dialog-confirm-dismissal-via-closeandunschedule-doesnt-propagate-properly)).
+How to drive MAS's PartySearchView end-to-end through the v0.8.5+ bridge. Originally documented around two bridge bugs affecting this surface: [Bug #1 RadioButtonSpec](./vw-bridge-known-issues.md#bug-1-click-on-radiobuttonspec-writes-literal-true-instead-of-specselect) (still active) and [Bug #2 Dialog confirm: return](./vw-bridge-known-issues.md#bug-2-dialog-confirm-dismissal-via-closeandunschedule-doesnt-propagate-properly) (**FIXED in v0.8.12** — the `Dialog confirm:` bypass below is now optional for `#contractNumber` and `#surname`; `/click findID` round-trips cleanly end-to-end).
 
 ## Opening the window
 
@@ -79,10 +79,10 @@ Of these, the ones that matter for driving search:
 
 ## Workarounds for the bridge bugs
 
-> **Quick reference** (calibrated 2026-06-19 session-2):
+> **Quick reference** (calibrated 2026-06-19 session-2; updated 2026-06-20 session-7 for the Bug #2 v0.8.12 fix):
 >
 > - **`exactFind:`** (any search type, `exactMatch=true`): bridge-drivable end-to-end. No Bug #2 involvement. See [exactFind: via bridge](#exactfind-via-bridge-verified-2026-06-19-session-2) below.
-> - **`partialFind:`** (broad search, `exactMatch=false`): only affected by Bug #2 for `#contractNumber` and `#surname` (the two cases that wrap their query in `Dialog confirm:`). `#id`/`#imcNr`/`#groupScheme` skip the modal and should be bridge-drivable via plain `/click findID` (unverified). `#mmiPartyReferenceNumber`/`#cdiNumber` always warn-redirect to exact match.
+> - **`partialFind:`** (broad search, `exactMatch=false`): **as of v0.8.12** (`SimpleDialog>>choose:labels:values:default:for:` override in category `mas-bug2-fix`), `/click findID` for `#contractNumber` and `#surname` round-trips correctly — the `'This search can take a while. Continue?'` Yes/No modal is dismissed and `partialMatchResults`/`partialMatchResultsChoices` populate as expected. End-to-end verified 2026-06-20 session-7 for `#contractNumber='PP0'` → canonical 19-contract result set (`PP020000019..`). The bypass recipe below is retained as a fallback / for skipping modal latency in tests / for historical context. `#id`/`#imcNr`/`#groupScheme` skip the modal entirely and should be bridge-drivable via plain `/click findID` (still unverified). `#mmiPartyReferenceNumber`/`#cdiNumber` always warn-redirect to exact match.
 > - **Radio buttons** (`searchCriteriaType*`): always set via `/eval` — Bug #1 affects all `RadioButtonSpec`.
 
 ### Setting the search type (Bug #1 workaround)
@@ -103,11 +103,13 @@ Verify:
 (model instVarNamed: 'searchCriteriaType') value printString
 ```
 
-### Running a broad search (Bug #2 workaround)
+### Running a broad search (Bug #2 workaround — OPTIONAL in v0.8.12+)
+
+> **STATUS (2026-06-20 session-7):** Bug #2 Symptom A is **FIXED in v0.8.12** via a 1-method override on `SimpleDialog>>choose:labels:values:default:for:` (the frame-22 thin delegator for `Dialog confirm:`). Bridge-dismissed `Yes`/`No` on a 2-button confirm now returns the correct boolean, and the `partialFind:` action handler runs to completion. **The bypass recipe below is no longer required for `#contractNumber` or `#surname`** — `/click findID` round-trips end-to-end (verified 2026-06-20 session-7 for `#contractNumber='PP0'` → 19-contract result set). Kept here as a fallback (e.g. if the override is ever rolled back, or for tests that prefer to skip modal latency) and for historical context. See [Bug #2 in vw-bridge-known-issues.md](./vw-bridge-known-issues.md#bug-2-dialog-confirm-dismissal-via-closeandunschedule-doesnt-propagate-properly) for the fix architecture, Phase 1 findings, Oracle verdict, and pre-probes.
 
 > **Scope (calibrated 2026-06-19 session-2):** Bug #2 only applies to `#contractNumber` and `#surname` (the two broad-search types that wrap their query in `Dialog confirm:`). For `#id`/`#imcNr`/`#groupScheme`, `partialFind:` does NOT pop a `Dialog confirm:` — bridge `/click findID` should round-trip cleanly (unverified — try it). For `#mmiPartyReferenceNumber`/`#cdiNumber`, `partialFind:` always warn-redirects to exact match.
 
-`/click findID` (for `#contractNumber` or `#surname`) → opens `'This search can take a while.  Continue?'` confirm modal → bridge dismisses with Yes → action handler **silently fails** to populate results (see Bug #2).
+In v0.8.11 and earlier: `/click findID` (for `#contractNumber` or `#surname`) → opens `'This search can take a while.  Continue?'` confirm modal → bridge dismisses with Yes → action handler **silently fails** to populate results (Bug #2 Symptom A). In v0.8.12+, this round-trip works cleanly — the action handler runs through and `partialMatchResultsChoices` populates.
 
 Bypass: invoke `ContractManager` / `PartyManager` / etc. directly and populate UI state manually:
 
@@ -288,7 +290,7 @@ The bridge's `/value?aspect=searchResultsListID` returns `[]` even when the unde
 
 ## Open questions (future work)
 
-- **What does `Dialog confirm:` actually return after `closeAndUnschedule`?** Need to instrument or trace via `SimpleDialog>>openInterface` to know. Blocks proper Bug #2 fix.
+- ~~**What does `Dialog confirm:` actually return after `closeAndUnschedule`?**~~ **ANSWERED 2026-06-20 session-7.** The framework hard-codes `nil` for both Yes AND No bridge dismissals via force-close (Q3 of session-7 Phase 1). The v0.8.12 fix synthesizes the correct boolean from `SimpleDialog`'s `accept`/`cancel` ValueHolders in frame 22 of the confirm chain — pre-probe 2 verified the bridge-set ValueHolder values survive the force-close unwind (`accept_after='true'`). See [vw-bridge-known-issues.md Bug #2 session-7 deep-dive](./vw-bridge-known-issues.md#bug-2-dialog-confirm-dismissal-via-closeandunschedule-doesnt-propagate-properly).
 - ~~**Row-selection mechanism for SequenceViewSpec.**~~ **ANSWERED 2026-06-19 session-2.** `partialMatchResultsChanged` calls `self exactFind:` on the selection → opens Portfolio. `displayPartialResults` only toggles widget visibility. See "Row selection mechanism" above.
 - **`partyCanvas` SubCanvas activation.** Starts as `nil`, becomes `a PartyTypeView` after any `findID` click. Even after a SUCCESSFUL `partialMatchResultsChanged` → `exactFind:` → Portfolio opens cleanly (verified 2026-06-19 session-2), `partyCanvas`'s 15 instVars (`typeOfClient`, `clientDetails`, `searchClientDetails`, `readOnlyClientDetails`, `viewPartyAs`, etc.) all stay `nil`. Activation must be on a different path — likely tied to `showPartyDetails` (the `cb_showPartyDetailsID` checkbox) or to the Portfolio's own `cmsAndKYCCanvas` loading. Untested.
 - **Untested `partialFind:` paths via `/click`.** Bug #2 scope calibration shows `#id`, `#imcNr`, `#groupScheme` don't use `Dialog confirm:` and should round-trip via the bridge. Confirm by `/click findID` with a valid term for each type (mind `#id`'s min-10-digit validation).
