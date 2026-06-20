@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.12 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.13 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -102,9 +102,10 @@ errorClass
 	^Core.Error!
 
 log: aString
-	| t |
-	t := self globalNamed: #Transcript.
-	t == nil ifFalse: [t cr; show: aString]!
+	"Backward-compatible info-level log. v0.8.13 multiplexes Transcript
+	 (with [info] prefix) AND appends an NDJSON line to vw-bridge.log
+	 next to .token. Existing 9 callers in this file keep working unchanged."
+	^self log: aString level: 'info'!
 
 beginsWithIgnoreCase: aString prefix: aPrefix
 	"Case-insensitive prefix match. Returns true if aString starts with aPrefix."
@@ -114,6 +115,67 @@ beginsWithIgnoreCase: aString prefix: aPrefix
 	p := aPrefix asString.
 	s size < p size ifTrue: [^false].
 	^(s copyFrom: 1 to: p size) asLowercase = p asLowercase! !
+
+!VWBridge methodsFor: 'logging'!
+
+log: aString level: aLevel
+	"v0.8.13 multiplexed log sink. Writes to Transcript (with [level] prefix,
+	 preserving the legacy behavior of log:) AND appends a JSON-line entry
+	 to vw-bridge.log. If either sink fails, the other is still attempted.
+	 No exceptions propagate out of this method - logging must never crash
+	 the bridge."
+	| t |
+	t := self globalNamed: #Transcript.
+	t == nil ifFalse: [
+		[t cr; show: '[' , aLevel , '] ' , aString]
+			on: self errorClass do: [:ex | nil]].
+	[self writeLogEntry: aString level: aLevel]
+		on: self errorClass do: [:ex | nil]!
+
+logWarn: aString
+	"Warn-level log convenience selector."
+	^self log: aString level: 'warn'!
+
+logError: aString
+	"Error-level log convenience selector."
+	^self log: aString level: 'error'!
+
+logFilePath
+	"v0.8.13 bridge log file location. Lives next to .token. Hardcoded
+	 here for the same reason .token is hardcoded in the auto-start chunk:
+	 the bridge runs as a single-developer-laptop tool with one canonical
+	 install path. Externalize to env-var when production packaging happens."
+	^'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\vw-bridge.log'!
+
+writeLogEntry: aMessage level: aLevel
+	"v0.8.13 append one NDJSON line to logFilePath. Per-write open/close
+	 for crash safety (an image crash mid-write loses at most one entry).
+	 Uses readWriteStream + setToEnd when the file exists (writeStream alone
+	 would truncate per the session-8 probe). Falls back to writeStream when
+	 the file does not exist yet (which creates it).
+	 Format: {ts:<Timestamp>, level:<info|warn|error>, msg:<text>}
+	 Concurrency note: file open serializes per-process on Windows. A
+	 sharing violation from a parallel HTTP fork drops that line silently
+	 (Transcript already received it). Acceptable for a debug log; revisit
+	 with a class-side mutex if log volume grows."
+	| path fn exists stream ts entry |
+	path := self logFilePath.
+	fn := path asFilename.
+	exists := [fn exists] on: self errorClass do: [:ex | false].
+	stream := exists
+		ifTrue: [[fn readWriteStream] on: self errorClass do: [:ex | nil]]
+		ifFalse: [[fn writeStream] on: self errorClass do: [:ex | nil]].
+	stream == nil ifTrue: [^self].
+	exists ifTrue: [
+		[stream setToEnd] on: self errorClass do: [:ex | nil]].
+	ts := [Timestamp now printString] on: self errorClass do: [:ex | '?'].
+	entry := '{"ts":' , (self safeJsonFor: ts) ,
+		',"level":' , (self safeJsonFor: aLevel) ,
+		',"msg":' , (self safeJsonFor: aMessage) , '}'.
+	[stream nextPutAll: entry.
+	 stream nextPut: Core.Character lf]
+		on: self errorClass do: [:ex | nil].
+	[stream close] on: self errorClass do: [:ex | nil]! !
 
 !VWBridge methodsFor: 'initialization'!
 
@@ -287,7 +349,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.12). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.8.13). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -317,7 +379,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.12). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.8.13). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -336,7 +398,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.12"}'].
+				body: '{"status":"ok","version":"0.8.13"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].

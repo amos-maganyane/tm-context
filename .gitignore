@@ -3,3 +3,4 @@
 test-results/*.txt
 src/vw-bridge/.token
 src/vw-bridge/.dialog-probe*.txt
+src/vw-bridge/vw-bridge.log
