@@ -135,7 +135,7 @@ Strategic assessment promised Wave 2 = `/screenshot` + `/wait` + auto-start + fi
 
 #### 2.3 — Pivot decision
 
-Logging has no architectural unknowns; auto-start is blocked at the Smalltalk level. The honest call: ship logging cleanly this session, document auto-start blocker, defer auto-start research to session-9+ with full scope (parcel migration / external bootstrap / MAS team coordination).
+Logging has no architectural unknowns; auto-start is blocked at the Smalltalk level. The honest call: ship logging cleanly this session, document auto-start blocker, defer auto-start research to session-9+ with full scope (parcel migration / external bootstrap script / image snapshot with restart-listener callback — all developer-side; for the test framework goal we control our CI/test image so no MAS team coordination is required).
 
 This matches the project's "fix the bugs / build the framework" discipline: when an exploration disproves a sub-plan, pivot with evidence rather than ship something half-broken. Same pattern as session-7 Phase 1.5 when Option A (Dialog override) was disproven by 940 senders + Path 2 pivoted to Option A′.
 
@@ -280,10 +280,10 @@ Push authorized: `b4d1d2b..<this commit>  main -> main`.
 
 5. **`/wait` endpoint** (~4-6h). The test framework absolutely needs this. Design space: polling-based (simpler, can implement on serve process with timeout) vs event-based (harder, needs hooks). Conditions to support: window-appears (by appClass + label), dialog-appears (by message substring), value-changes (by widget aspect + comparator). Returns 200 with state on success, 408 on timeout. Worth Oracle consult on the predicate language.
 6. **`/screenshot` endpoint** (~8-12h). Largest scope, highest uncertainty. Needs UI-process dispatch (similar to `/dialogs` and `/click`), graphics capture API (likely `Image fromUser:` or `Screen default screenshot`), base64 encoding, JSON transport. Oracle consult mandatory — multiple architecture decisions (encoding format, blob size limits, sync vs async). Could plausibly defer to Wave 3 if `/wait` is the higher-leverage need.
-7. **Auto-start research** (architectural). Three paths to evaluate with the user's input on MAS team coordination availability:
-   - **Parcel migration** of the bridge (`VWBridge.pcl`) with image-load-time auto-start. This is what session-7's strategic assessment classified as Wave 5+. Needs MAS team buy-in (changes how the bridge ships).
-   - **External bootstrap script** (Topaz/IRC) that runs `(Smalltalk at: #VWBridge) start` after `vwnt.exe` initialization. Bypasses the missing Smalltalk-level hooks. Adds external infrastructure.
-   - **Modify MAS bootstrap** to add an init slot for tools like the bridge. Heaviest, requires MAS team commit.
+7. **Auto-start research** (architectural). For the test framework goal (replace Test Mentor on our CI), we own the deployment surface end-to-end — bridge code, CI runner setup, image snapshot/parcel — so **no MAS team coordination is required**. The earlier framing of "needs MAS team buy-in" was a phantom dependency; that would only be true if we wanted to ship the bridge as part of MAS's released image consumed by other teams, which is not the goal. Three developer-side paths to evaluate:
+   - **Parcel migration** of the bridge (`VWBridge.pcl`) with `parcelInitialize` block that runs `VWBridge start` on load. We build the parcel, we put it where VW finds it on our CI runner. Cleanest long-term answer; orthogonal to the missing SessionManager hooks (parcel-load is a different VW mechanism). Probe parcel availability in this image first.
+   - **External bootstrap script** (Topaz/IRC/PowerShell) that runs `(Smalltalk at: #VWBridge) start` after `vwnt.exe` initialization. Bypasses the missing Smalltalk-level hooks entirely. Adds external infrastructure but ships fastest (~3-7 days).
+   - **Image snapshot with bridge pre-loaded** via `ObjectMemory snapshotAs:thenQuit:` after filing in the bridge. Bridge code persists across restarts but the listener fork doesn't survive snapshot; still needs a small image-restart callback to restart the listener. Probe whether parcel-load or snapshot-restore callbacks are reachable in this image.
 
 ### Trivial fix (~5min if desired)
 
@@ -361,7 +361,7 @@ Push authorized: `b4d1d2b..<this commit>  main -> main`.
 - **String `indexOfSubCollection:` (1-arg) errors in some receiver contexts on this image** (session-8 NEW). Use the 2-arg form `indexOfSubCollection: aSub startingAt: anIndex`. The bridge code already uses the 2-arg form correctly; `bodyOf:` in the test scaffold uses 1-arg and surfaces this issue when accidentally exercised via /eval.
 - **String `includesSubString:` does NOT exist** (session-8 NEW). Confirmed by 2 probe attempts. Use 2-arg `indexOfSubCollection: aSub startingAt: 1` with a `> 0` check instead.
 - **`DateAndTime` class does NOT exist** in this image (session-8 NEW). Use `Timestamp now printString` for absolute time. `Core.Time millisecondClockValue` for ms since image start.
-- **`SessionManager instance` returns `nil`** (session-8 NEW). The standard VW `SessionManager instance addStartupAction:` pattern is unusable. Auto-start hooks must use a different mechanism (parcel-load callback / external bootstrap / MAS bootstrap modification).
+- **`SessionManager instance` returns `nil`** (session-8 NEW). The standard VW `SessionManager instance addStartupAction:` pattern is unusable. Auto-start hooks must use a different mechanism — all developer-side: parcel-load callback (`parcelInitialize`, orthogonal to SessionManager), external bootstrap script, or image snapshot with restart-listener callback. None require MAS team coordination since we own our CI/test image.
 - **`Filename` (NTFSFilename) has NO `appendingWriteStream`** (session-8 NEW). Use `readWriteStream` + `setToEnd` for append. `writeStream` ALWAYS truncates on open (even with `setToEnd` after).
 - **Standard `instVarNames` is CLASS-SIDE**: `model class instVarNames`.
 - **`isCollection` does NOT exist as a generic selector** — use `respondsTo: #do:` instead.
