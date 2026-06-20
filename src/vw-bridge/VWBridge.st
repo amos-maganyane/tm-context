@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.8 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.9 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -287,7 +287,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.8). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.8.9). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -317,7 +317,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.8). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.8.9). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -336,7 +336,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.8"}'].
+				body: '{"status":"ok","version":"0.8.9"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -1164,43 +1164,73 @@ doListDialogs
 	^self jsonFor: response!
 
 describeDialog: aSimpleDialog
-	"Build a Dictionary describing one live SimpleDialog: id, message text,
-	 button labels (extracted from ActionButtonSpec widgets in
-	 namedComponents).
-	 Message text extraction: spec.label may be String, Text, or
-	 ComposedText - all respond to #asString returning the raw text.
-	 Older versions tried widget.model.value which errored on ComposedText."
-	| d err builder comps msg btnLabels msgWidget |
+	"Build a Dictionary describing one live SimpleDialog (or any subclass):
+	 id, class, message text, button labels.
+	 v0.8.9 (Bug #4b fix): generalised over Dialog class. Message extraction
+	 tries several common aspect names (SimpleDialog uses
+	 #displayMessageString; subclasses like ExtendedSimpleDialog delegate
+	 building to a 'source' app model that may use different aspect names).
+	 Button extraction iterates ALL widgets and picks any spec whose class
+	 name contains 'Button' - covers ActionButtonSpec,
+	 PluggableActionButtonSpec, and any future *ButtonSpec variants. The
+	 'class' field tells callers which dialog subclass they're dealing with
+	 (47 SimpleDialog subclasses exist in this image)."
+	| d err builder comps msg btnLabels |
 	err := self errorClass.
 	d := Core.Dictionary new.
 	d at: 'id' put: ([aSimpleDialog identityHash printString] on: err do: [:ex | nil]).
+	d at: 'class' put: ([aSimpleDialog class name asString] on: err do: [:ex | nil]).
 	builder := [aSimpleDialog builder] on: err do: [:ex | nil].
 	msg := nil.
 	btnLabels := Core.OrderedCollection new.
 	builder ~~ nil ifTrue: [
 		comps := [builder namedComponents] on: err do: [:ex | nil].
 		comps ~~ nil ifTrue: [
-			"Message text via displayMessageString aspect."
-			msgWidget := [comps at: #displayMessageString ifAbsent: [nil]] on: err do: [:ex | nil].
-			msgWidget ~~ nil ifTrue: [
-				msg := [msgWidget spec label asString] on: err do: [:ex | nil]].
-			"Button labels - iterate ActionButtonSpec widgets defensively
-			 (same valuesDo:/do: fallback as resolveAspect:)."
-			(comps respondsTo: #valuesDo:)
-				ifTrue: [
-					comps valuesDo: [:w |
-						([w spec class name asString = 'ActionButtonSpec'] on: err do: [:ex | false])
-							ifTrue: [
-								btnLabels add: ([w spec label asString] on: err do: [:ex | nil])]]]
-				ifFalse: [
-					(comps respondsTo: #do:) ifTrue: [
-						comps do: [:w |
-							([w spec class name asString = 'ActionButtonSpec'] on: err do: [:ex | false])
-								ifTrue: [
-									btnLabels add: ([w spec label asString] on: err do: [:ex | nil])]]]]]].
+			msg := self extractDialogMessageFrom: comps.
+			btnLabels := self extractDialogButtonsFrom: comps]].
 	d at: 'message' put: msg.
 	d at: 'buttons' put: btnLabels asArray.
 	^d!
+
+extractDialogMessageFrom: comps
+	"Bug #4b: try common message aspect names in order. Return first non-nil
+	 non-empty String, or nil if none match. SimpleDialog uses
+	 #displayMessageString; the other candidates cover ExtendedSimpleDialog
+	 and other subclasses whose 'source' app model may name the message
+	 widget differently. spec.label may be String, Text, or ComposedText -
+	 all respond to #asString returning the raw text."
+	| err result |
+	err := self errorClass.
+	#(displayMessageString message text displayText labelString messageText) do: [:aspectSym |
+		| widget |
+		widget := [comps at: aspectSym ifAbsent: [nil]] on: err do: [:ex | nil].
+		widget ~~ nil ifTrue: [
+			result := [widget spec label asString] on: err do: [:ex | nil].
+			(result ~~ nil and: [result isEmpty not]) ifTrue: [^result]]].
+	^nil!
+
+extractDialogButtonsFrom: comps
+	"Bug #4b: iterate ALL widgets in namedComponents and collect labels of
+	 any whose spec class name contains 'Button' (case-sensitive substring).
+	 Captures ActionButtonSpec (SimpleDialog), PluggableActionButtonSpec,
+	 and any future *ButtonSpec variants. Excludes purely-non-button
+	 widgets (LabelSpec, InputFieldSpec, etc.).
+	 Uses valuesDo:/do: fallback for namedComponents variants that don't
+	 implement #valuesDo: (same defensive pattern as resolveAspect:)."
+	| err btnLabels iterBlock |
+	err := self errorClass.
+	btnLabels := Core.OrderedCollection new.
+	iterBlock := [:w |
+		| specName label |
+		specName := [w spec class name asString] on: err do: [:ex | nil].
+		(specName ~~ nil and: [(specName indexOfSubCollection: 'Button' startingAt: 1) > 0]) ifTrue: [
+			label := [w spec label asString] on: err do: [:ex | nil].
+			(label ~~ nil and: [label isEmpty not]) ifTrue: [btnLabels add: label]]].
+	(comps respondsTo: #valuesDo:)
+		ifTrue: [comps valuesDo: iterBlock]
+		ifFalse: [
+			(comps respondsTo: #do:) ifTrue: [comps do: iterBlock]].
+	^btnLabels!
 
 handleDialogsRespondBody: bodyString
 	"POST /dialogs/respond - dispatch a button click on the live modal.
