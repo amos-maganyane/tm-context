@@ -217,6 +217,86 @@ Bug #2 is **NOT universal across broad-search types.** Decompiling `PartySearchV
 
 **Practical implication:** the Bug #2 workaround in [`vw-party-search.md`](./vw-party-search.md) ("Running a broad search") is REQUIRED for `#contractNumber` and `#surname`. For `#id`/`#imcNr`/`#groupScheme`, `/click findID` should round-trip cleanly via partialFind: — but those three no-modal types remain UNVERIFIED end-to-end via the bridge. Worth confirming in a follow-up session.
 
+### Session-5 investigation findings (2026-06-20)
+
+**Status: NOT FIXED, but diagnosis sharpened with concrete runtime evidence.**
+
+Session-5 reproduced Symptom A end-to-end on v0.8.10 and uncovered evidence the session-3 writeup missed.
+
+#### Phase A — what `Dialog confirm:` actually returns
+
+Stage 1 of the proposed fix was "instrument Dialog confirm: to see what it returns after closeAndUnschedule." Sources are stripped in this image (`getSource` returns nil for all methods), so direct method instrumentation isn't available. Instead, session-5 forked a process that calls `Dialog confirm:` and captures the return into a `Root.Smalltalk` global:
+
+```smalltalk
+| proc |
+Root.Smalltalk at: #BUG2_RESULT put: 'pending'.
+proc := [
+    | ret info |
+    ret := Dialog confirm: 'BUG2 Stage 1: ...'.
+    info := Core.Dictionary new.
+    info at: 'isTrue' put: ret == true.
+    info at: 'class' put: ret class name asString.
+    info at: 'printString' put: ret printString.
+    Root.Smalltalk at: #BUG2_RESULT put: info
+] forkAt: Processor userSchedulingPriority.
+```
+
+**Standalone result (first call, fresh image state):** `BUG2_RESULT = {class: 'True', printString: 'true', isTrue: true, isNil: false}`. `Dialog confirm:` returned `true` cleanly after `accept value: true` + `closeAndUnschedule`. This contradicts the session-3 "returns nil" hypothesis for the standalone case.
+
+#### Phase B — partialFind: context differs
+
+Reproducing Symptom A exactly per session-3 (preconditions set, `findID` triggered via fork, dismiss via `/dialogs/respond Yes`):
+
+| Step | Result |
+|---|---|
+| Fork `findBtn widget model value: true` | Confirm modal opens: "This search can take a while. Continue?" ✓ |
+| `/dialogs/respond Yes` (current accept+closeAndUnschedule path) | `recordedAccept=true`, modal closes ✓ |
+| Wait 23 s | `partialMatchResultsChoices.value` size=0, `partialMatchResults.value`=nil |
+| **`/windows` poll** | **NEW WINDOW APPEARED**: `appClass=GbxDebuggerClient`, `title='Unhandled exception: NonBoolean receiver--proceed for truth.'` |
+
+The debugger window is the **smoking gun** session-3 missed. The session-3 doc says "No `UnhandledException` raised" — but the exception IS raised, just into a `GbxDebuggerClient` window that the bridge's `/dialogs` enumeration doesn't catch (it filters for `SimpleDialog`-class only). From outside, the action handler appears to silently exit; in reality it's wedged inside the debugger.
+
+#### What this confirms about Dialog confirm:'s return in partialFind: context
+
+`NonBoolean receiver--proceed for truth` is raised when `ifTrue:` (or `ifFalse:`) is sent to a value that is neither `true` nor `false`. The only `ifTrue:` in the relevant partialFind: branch (per the prior session-3 quote) is:
+
+```smalltalk
+(Dialog confirm: 'This search can take a while.  Continue?')
+ ifTrue: [...] ifFalse: [...]
+```
+
+So `Dialog confirm:` in this context **does return a non-boolean** (almost certainly `nil`) — which means the session-3 hypothesis was structurally right; only the "no exception" detail was wrong. The exception fires, the debugger opens (invisible to the bridge), and the action handler stays wedged inside the debugger forever.
+
+#### Why standalone works but partialFind: doesn't
+
+This remains the open question. Session-5 directly invoked `model partialFind: 'PP0'` on a fork (bypassing the ActionButton dispatch entirely) — the modal STILL opened and `Dialog confirm:` STILL returned a non-boolean. So the ActionButton/PluggableAdaptor pipeline is NOT the difference. Something about partialFind:'s own setup (`Cursor wait showWhile:`? `self abort`? some `ensure:` block? a transaction context?) makes Dialog confirm: behave differently from a fresh fork.
+
+Could not investigate further: after multiple confirm dismissals in one image session, **wedge state accumulates** — subsequent standalone `Dialog confirm:` forks ALSO hang (not just the partialFind: ones). The image needs to be restarted between fix attempts to get a clean diagnostic baseline.
+
+#### Probe findings useful for the fix
+
+While the confirm modal was up, structural probing yielded:
+
+- `namedComponents` aspects: `#(#displayMessageString #NoButton #YesButton)` (three widgets, no others)
+- **YesButton**: `spec class=ActionButtonSpec`, `spec isDefault=true`, `widget class=ActionButtonView`, `widget.model class=PluggableAdaptor`, `model value=false`
+- **NoButton**: `spec class=ActionButtonSpec`, `spec isDefault=false`, identical structure to YesButton otherwise
+- **Dialog state mid-modal** (probed BEFORE dismiss): `accept value=false`, `cancel value=false`, **`close value=true`** (already true! the dialog's close ValueHolder is pre-set to true when the modal is live — this contradicts vw-dialogs.md's "ValueHolder on: false. Modal exits when set to true." The actual exit semantic must use a different mechanism than checking `close value`)
+
+#### What did NOT work (failed fix attempts)
+
+- **`widget model value: true` on YesButton** (the PluggableAdaptor setter): modal stays up, action does NOT fire. This works for PartySearchView's `findID` ActionButton (per Bug #1) but does NOT work for SimpleDialog's YesButton. Different action wiring.
+- (Could not test further fix attempts because of wedge accumulation in the image.)
+
+#### Probable fix direction (for the next dedicated session)
+
+Given that `close value=true` already and the modal still doesn't exit cleanly via accept-checking, the modal loop must use some OTHER mechanism to decide its return value. Probable candidates to investigate in a clean image:
+
+1. **Simulate the YesButton click via OS event injection**, not via `model value:`. The Bug #1 PluggableAdaptor pattern that works for PartySearchView ActionButtons does NOT work for SimpleDialog YesButton — different action wiring. Need to find the actual click pipeline (maybe `widget controller pressedButton` or `widget controller buttonAction` or a process-input-event-injection path).
+2. **Investigate what partialFind: wraps Dialog confirm: in.** Bug #2 ONLY affects the partialFind: + Dialog confirm: combination — standalone confirm works. Something in partialFind: changes the modal's return semantics. Could be a `withWaitCursor:`, a `Cursor wait showWhile:`, an `ensure:` block, or some transaction/exception-handler context. Without source access this is empirical — instrument fresh forks and bisect.
+3. **Stage 3 (still valid)**: Guard `/eval` against bodies containing `Dialog confirm:` / `Dialog request:` / `Dialog warn:`. These hang the bridge's serve-process even with Bug #5's v0.8.8 per-process re-entry guard, because the hang is in the UI modal loop, not the dispatcher.
+
+### Proposed fix (Phase B+1 or Phase C)
+
 ---
 
 ## Bug #3 (calibration, not a bug): `activeControllerProcess=nil` is NOT a smoking gun
