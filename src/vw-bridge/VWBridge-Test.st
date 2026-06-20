@@ -70,11 +70,13 @@ statusLineOf: aResponse
 	^idx > 0 ifTrue: [aResponse copyFrom: 1 to: idx - 1] ifFalse: [aResponse]!
 
 bodyOf: aResponse
-	"Everything after the headers/body separator (CR LF CR LF)."
+	"Everything after the headers/body separator (CR LF CR LF).
+	 Uses 2-arg indexOfSubCollection:startingAt: because the 1-arg form errors
+	 on some receiver contexts in this image (session-8 carry-forward constraint)."
 	| crlf sep idx |
 	crlf := String with: Core.Character cr with: Core.Character lf.
 	sep := crlf , crlf.
-	idx := aResponse indexOfSubCollection: sep.
+	idx := aResponse indexOfSubCollection: sep startingAt: 1.
 	^idx > 0
 		ifTrue: [aResponse copyFrom: idx + sep size to: aResponse size]
 		ifFalse: ['']! !
@@ -95,8 +97,8 @@ testHealthReturnsCurrentVersion
 	body := self bodyOf: (self dispatch: 'GET /health HTTP/1.1').
 	self assert: (body indexOfSubCollection: '"status":"ok"') > 0
 		description: 'Health body missing status=ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"version":"0.8.13"') > 0
-		description: 'Health body missing version=0.8.13. Body: ' , body!
+	self assert: (body indexOfSubCollection: '"version":"0.9.0"') > 0
+		description: 'Health body missing version=0.9.0. Body: ' , body!
 
 testHealthDoesNotRequireAuth
 	"Health is intentionally auth-exempt for liveness probes."
