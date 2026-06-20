@@ -350,29 +350,55 @@ isKindOf: SimpleDialog -> 1 (catches Help ExtendedSimpleDialog)
 class == SimpleDialog  -> 0 (old broken behavior)
 ```
 
-### Bug #4b (sub-finding, lower priority): `describeDialog:` is `SimpleDialog`-shaped
+### Bug #4b (sub-finding, lower priority): `describeDialog:` returns null message + empty buttons for `ExtendedSimpleDialog`
 
 After the Bug #4 fix, `/dialogs` enumerates `ExtendedSimpleDialog` instances correctly, but `describeDialog:` returns a partial structure for them:
 
 ```json
-{"message": null, "id": "540486", "buttons": []}
+{"class":"ExtendedSimpleDialog","message":null,"id":"992572","buttons":[]}
 ```
 
-vs. the rich `{message, buttons:[...]}` shape it produces for a plain `SimpleDialog`. Cause: `describeDialog:` extracts the message via the widget aspected to `#displayMessageString` and buttons via the `ActionButtonSpec` entries in `model builder namedComponents` — both are `SimpleDialog`'s spec layout, NOT `ExtendedSimpleDialog`'s (whose `instVarNames` include `close accept cancel preBuildBlock postBuildBlock postOpenBlock escapeIsCancel parentView useParentColors` directly on the model, with its own builder layout).
+vs. the rich `{message, buttons:[...]}` shape it produces for a plain `SimpleDialog`.
 
-**Impact:** callers can detect that a dialog is up and they can dismiss it via `closeAndUnschedule` (which doesn't need button knowledge), but they can't make an informed Yes/No/OK choice based on the dialog's button labels. For Help-style modals this is fine (single Close path); for any subclassed confirm-style modal it would matter.
+**Impact:** callers can detect that a dialog is up (now also see WHICH subclass via the `class` field added in v0.8.9) and they can dismiss it via `closeAndUnschedule` (which doesn't need button knowledge), but they can't make an informed Yes/No/OK choice based on the dialog's button labels. For Help-style modals this is fine (single Close path); for any subclassed confirm-style modal it would matter.
 
-**Proposed fix (Phase B+1):** add a class-aware branch in `describeDialog:` that probes the dialog's builder layout instead of assuming the `SimpleDialog` shape. Sketch:
+### Investigation (2026-06-20 session-4)
 
-```smalltalk
-describeDialog: aDialog
-  ...
-  (aDialog isKindOf: ExtendedSimpleDialog)
-    ifTrue: [^self describeExtendedDialog: aDialog]
-    ifFalse: [^self describeSimpleDialog: aDialog]
-```
+Live probe of an `ExtendedSimpleDialog` (Help modal from PartySearchView):
 
-Or, more general: probe `aDialog builder namedComponents` for any `ActionButtonSpec`-like widgets regardless of the parent dialog class, and probe for `displayMessageString` or a similar message aspect on the builder, falling back to `nil` gracefully.
+| Probe | Result |
+|---|---|
+| `ExtendedSimpleDialog instVarNames` | `#()` (the prior doc speculation about extra inst vars was wrong) |
+| Superchain | `ExtendedSimpleDialog -> SimpleDialog -> ApplicationModel -> Model -> Object` |
+| Override methods (9) | `builder initialize preBuildWith: allButOpenFrom: openFor:interface:at: noticeOfWindowClose: requestForWindowClose simulateEscapeKey windowLabelPrefix` |
+| Live Help dialog's `builder namedComponents` | **EMPTY (`#()`)** |
+| Source's builder (`builder source builder`) | **Same object as `dialog builder`** (`srcBuilderSameAsDialog: true`) — also empty |
+| Source class | `QueriesHelpView` (an ApplicationModel) |
+| Source inst vars | `dependents builder uiSession eventHandlers tabbedWindowId parentApplication readOnly dialogSubSpecSymbol domainChannel domainIsChanging` — no direct widget references |
+
+**Real cause:** `namedComponents` is **completely empty** for `ExtendedSimpleDialog`. The dialog's widgets (the message text and the Close button visible in the UI) are NOT registered as named aspects on the builder. They must live somewhere else:
+
+- Built dynamically into the View tree (subviews of the dialog window) without ever being registered via `name:` on the builder
+- OR addressed via a `dialogSubSpecSymbol`-based windowSpec resolved at dynamic-build time (the source's `dialogSubSpecSymbol` instVar hints at this)
+- OR held as inst vars on the source object's superclass chain (not the immediate inst vars probed)
+
+The doc's prior diagnosis ("ExtendedSimpleDialog's instVarNames include close accept cancel ..." and "its own builder layout") was speculation. The actual situation requires walking the View tree or resolving the sub-spec — neither of which is a quick polish fix.
+
+### Status: PARTIALLY FIXED in v0.8.9 (2026-06-20 session-4)
+
+Two improvements landed in [`VWBridge.st`](../src/vw-bridge/VWBridge.st):
+
+1. **New `class` field on `describeDialog:` response.** Callers can now see `"class":"ExtendedSimpleDialog"` (or whichever of the 47 SimpleDialog subclasses they're dealing with) without round-tripping `/eval`. Backwards-compat (field ADDED only).
+
+2. **`describeDialog:` refactored into orchestrator + 2 helpers** (`extractDialogMessageFrom:`, `extractDialogButtonsFrom:`). The new helpers try multiple message aspect names (`#displayMessageString`, `#message`, `#text`, `#displayText`, `#labelString`, `#messageText`) and iterate ALL widgets matching `*Button*` spec class substring. Defense-in-depth that benefits any future SimpleDialog subclass that DOES register aspects — but does NOT help `ExtendedSimpleDialog` specifically, because that dialog's `namedComponents` is empty regardless of which aspect names we probe.
+
+**What still doesn't work:** for `ExtendedSimpleDialog` (and presumably some of the other 45+ SimpleDialog subclasses with similar dynamic-build patterns), `describeDialog:` still returns `message: null, buttons: []`. The new `class` field is the only useful new info for this dialog class.
+
+### Proposed fix (deferred, requires deeper investigation)
+
+Probable path forward: walk the View tree of `aDialog window` looking for `ActionButton`-class widgets and `Label`-class widgets, collecting their displayed text. This bypasses the builder/namedComponents abstraction entirely and reads the rendered widget tree directly. Requires probing the correct view-child selectors for this VW image (`subViews` doesn't exist here — `components`, `subComponents`, `subwidgets`, `children`, `submorphs`, `childrenComponents` were all tried in session-4 and none matched). May need to dig into `View` / `ScheduledWindow` class hierarchy or use `View allSubInstances`-style reflection.
+
+Estimated effort: 1-2 hours of focused VW view-tree archaeology. Not done in session-4 because Bug #4b was framed as "polish ~30min" and the rabbit hole exceeded that budget. Genuine full fix should probably be its own session.
 
 ---
 
