@@ -400,6 +400,86 @@ Probable path forward: walk the View tree of `aDialog window` looking for `Actio
 
 Estimated effort: 1-2 hours of focused VW view-tree archaeology. Not done in session-4 because Bug #4b was framed as "polish ~30min" and the rabbit hole exceeded that budget. Genuine full fix should probably be its own session.
 
+### Status: FIXED in v0.8.10 (2026-06-20 session-5)
+
+Three-tier extraction in [`describeDialog:`](../src/vw-bridge/VWBridge.st) with a NEW view-tree walk helper `extractDialogFromView:`. Latent `indexOf:startingAt:` MNU in `extractLabelText:` also repaired (this VW image does NOT implement that selector on String — the menu walking path never triggered it because menu items have plain String labels, but the new view-tree walk hits LabelWithAccessor wrappers which DO trigger printString quote-parsing).
+
+#### Key findings overturning session-4's "no selector matched" claim
+
+Session-4 said `children` was tried and didn't match. **It does match — universally** — but the prior probes applied it to the wrong receiver (likely the `SimpleDialog` instance itself or the `UIBuilder`, neither of which understands `children`). Probe-confirmed in session-5 via `canUnderstand:` on the runtime view classes:
+
+| Class | Super | `children`? | Used as |
+|---|---|---|---|
+| `View` | `DependentPart` | ✓ | base UI element |
+| `Wrapper` | `VisualPart` | ✓ | single-child container (`component` instVar) |
+| `CompositeView` | `DependentComposite` | ✓ | multi-child container (`components` instVar) |
+| `VisualPart` | `VisualComponent` | ✓ | abstract view base |
+| `ScheduledWindow` | `Window` | also has `component` | top-level window |
+| `SimpleDialog` | `ApplicationModel` | ✗ | use `mainWindow component` to enter view tree |
+| `UIBuilder` | `Object` | ✗ | use `window` (instVar) for top-level |
+
+The correct walk path is `aDialog mainWindow component children` (recursive), NOT anything sent to the SimpleDialog instance directly.
+
+#### Live tree shape for SimpleDialog (`Dialog warn:` probe target)
+
+```
+0> CompositePart            (root, from mainWindow component)
+1>  SpecWrapper
+2>   LayoutWrapper
+3>    PassiveLabel    label=a ComposedText      ← THE MESSAGE
+1>  SpecWrapper
+2>   BoundedWrapper
+3>    WidgetStateWrapper
+4>     CompositePart
+5>      SpecWrapper
+6>       BoundedWrapper
+7>        ActionButtonView  label=LabelWithAccessor for 'OK'   ← THE BUTTON
+```
+
+Depth-7 leaves on a vanilla `Dialog warn:`. The walker is depth-capped at 12 for comfortable headroom.
+
+#### Widget-label unwrapping (probe-confirmed table)
+
+| Widget class | `label` returns | `asString` | `string` | `printString` | `extractLabelText:` returns |
+|---|---|---|---|---|---|
+| `PassiveLabel` | `ComposedText` | raw text ✓ | raw text ✓ | `'a ComposedText'` ✗ | raw text (via `#string` fallback) |
+| `ActionButtonView` | `LabelWithAccessor` | `"LabelWithAccessor for ''OK''"` ✗ | MNU ✗ | same as asString | `'OK'` (via printString quote-parse) |
+| (plain String label) | String | — | — | — | self (via `isString` early return) |
+
+The fallback chain in `extractLabelText:` was reordered in v0.8.10 to put `#string` BEFORE `#displayString` — `displayString` on `ComposedText` returns the class-name placeholder `'a ComposedText'`, while `#string` returns the raw text. The old ordering would have skipped past the correct accessor.
+
+#### Tier 2 algorithm
+
+DFS via `children`, classifying leaves by class-name substring:
+
+- `*Button*` → button widget (matches `ActionButtonView`, `PluggableActionButtonView`, future `*Button*View` variants)
+- `*Label*` (and NOT also `*Button*`) → label widget (matches `PassiveLabel`, `ActiveLabel`)
+- First non-empty label in DFS order → message; all buttons collected in DFS order
+
+Stack-based iteration with `reverseDo:` push so children pop in original order (true DFS). Tier 2 only fires when Tier 1 returned `msg=nil AND btnLabels empty` — conservative condition that won't overwrite partial Tier 1 results.
+
+#### Latent bug fix (`extractLabelText:`)
+
+`txt indexOf: qch startingAt: p1 + 1` was the existing call at line 732. **This VW image does not implement `String>>indexOf:startingAt:`** (probe-confirmed; the index-related selectors that DO exist are `indexOf:`, `indexOf:ifAbsent:`, `indexOfSubCollection:startingAt:`, and `nextIndexOf:from:to:`). The bug never surfaced because menu items in this image always have plain String labels (handled by the `isString` early return) so the printString quote-parse path was never entered in production. The new view-tree walk DOES exercise that path for `ActionButtonView` labels (`LabelWithAccessor` wrappers), so the latent bug had to be repaired before Tier 2 could function. v0.8.10 uses `nextIndexOf: qch from: p1 + 1 to: txt size` with a defensive `on: Core.Error` wrap.
+
+#### Verification (2026-06-20 session-5)
+
+| Probe | Expected | Result |
+|---|---|---|
+| `/health` post-reload | `version:0.8.10` | ✓ `{"status":"ok","version":"0.8.10"}` |
+| Regression: fork `Dialog warn:`, `/dialogs` | `SimpleDialog` Tier 1 unchanged | ✓ `{class:SimpleDialog, message:"BUG4B PROBE - leave me up briefly", buttons:["OK"]}` |
+| **NEW**: fork PartySearchView, fork `helpID` click, `/dialogs` | `ExtendedSimpleDialog` Tier 2 populated | ✓ `{class:ExtendedSimpleDialog, message:"1. Select the search type eg: Name.", buttons:["Close"]}` |
+| Tier 2 simulation on warn dialog (algorithm validation before code edit) | Same as Tier 1 output | ✓ `#('BUG4B PROBE - leave me up briefly' #('OK'))` |
+| Dismiss Help via `/dialogs/respond OK` | `closeAndUnschedule` succeeds | ✓ `{ok:true, method:closeAndUnschedule}` |
+| Post-cleanup `/windows` | back to 5-window baseline | ✓ |
+
+Both message and button extraction now work for `ExtendedSimpleDialog`. Tier 1 unchanged for `SimpleDialog` (no regression risk). The same approach should work for the remaining 45+ SimpleDialog subclasses in this image — Tier 2 only fires when Tier 1 fails, so even if a future subclass needs different handling, the bridge gracefully falls back to view-tree walking.
+
+#### Files changed
+
+- [`src/vw-bridge/VWBridge.st`](../src/vw-bridge/VWBridge.st) — `extractLabelText:` (latent MNU fix + reordered fallback chain), `describeDialog:` (Tier 2 dispatch), NEW `extractDialogFromView:` method, 4 version sites bumped 0.8.9→0.8.10
+- [`src/vw-bridge/VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) — `testHealthReturnsCurrentVersion` assertion bumped 0.8.9→0.8.10
+
 ---
 
 ## Bug #5: Recursive `bridge dispatch:` from inside `/eval` wedges the listener (HARD)
