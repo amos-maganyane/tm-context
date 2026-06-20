@@ -44,14 +44,14 @@ The toggle persists across bridge restarts (it's a class-side setting on `Dialog
 ## SimpleDialog structure (when `useNativeDialogs: false`)
 
 A live modal `SimpleDialog` instance has these key instVars:
-- `accept` — `ValueHolder on: false`. Set to true to record "user clicked Yes/OK".
-- `cancel` — `ValueHolder on: false`. Set to true to record "user clicked No/Cancel".
-- `close` — `ValueHolder on: false`. Modal exits when set to true.
+- `accept` — `ValueHolder on: false`. Set to true to record "user clicked Yes/OK". **Read by the v0.8.12 `SimpleDialog>>choose:labels:values:default:for:` override to synthesize the boolean return value when the framework's force-close yields nil.**
+- `cancel` — `ValueHolder on: false`. Set to true to record "user clicked No/Cancel". Same v0.8.12 override.
+- `close` — `ValueHolder on: false`. **Setting `close value: true` does NOT exit the modal loop in this image.** Verified session-5+6: `close value` is observed to be `true` BEFORE dismissal AND the modal stays up regardless. The modal loop is wedged at `ApplicationDialogController>>eventLoop → WindowManager>>processNextEvent → EventQueue>>next → Semaphore>>waitIfCurtailedSignal` and exits only when (a) `closeAndUnschedule` destroys the OS window AND (b) something purges the wedged fork (see v0.8.11 `purgeWedgedDialogProcesses` in [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) Bug #2).
 - `builder` — UIBuilder with `namedComponents` dictionary holding the dialog's widgets.
 
 Superclass chain: `SimpleDialog → ApplicationModel → Model → Object`.
 
-The modal runs a **nested event loop** on the UI process. The loop waits for `close value` to become true. Setting `close value: true` from a DIFFERENT process (e.g. the bridge's serve-process via `/eval`) sets the ValueHolder but does NOT immediately wake the loop — the modal's process must yield first to notice.
+The modal runs a **nested event loop** on the UI process. The loop blocks on `EventQueue>>next` which waits on a Semaphore. Setting any of `accept`/`cancel`/`close` ValueHolders from a DIFFERENT process (e.g. the bridge's serve-process via `/eval`) **does NOT wake the loop** — the framework polls events, not ValueHolders. Use `closeAndUnschedule` + `purgeWedgedDialogProcesses` together to dismiss + unwedge.
 
 ## Widget aspects (from `/windows/tree` on a live modal)
 
@@ -100,14 +100,9 @@ target ~~ nil ifTrue: [
 - `interruptWith:` on `activeControllerProcess` — `activeControllerProcess` returns `nil` while a modal is up, so there's nothing to interrupt.
 
 ### Why `closeAndUnschedule` works when others don't
-`closeAndUnschedule` removes the controller from `scheduledControllers` and triggers the OS-level window close. The OS close event propagates back into VW's event queue, which the modal's loop processes on its next iteration (and the OS event arrival forces such an iteration). This is the only path that reliably wakes the wedged loop.
+`closeAndUnschedule` removes the controller from `scheduledControllers` and triggers the OS-level window close. The OS close event propagates back into VW's event queue, which the modal's loop processes on its next iteration (and the OS event arrival forces such an iteration). **For the modal to fully unwind**, the OS-destroy event must reach the fork's WindowManager EventQueue — which doesn't always happen automatically. The v0.8.11 fix (`purgeWedgedDialogProcesses`) walks `Process allInstances`, finds any fork stuck in `ApplicationDialogController>>eventLoop`, and sends `purgeDeadWindows` to its WindowManager. That triggers the loop to notice its `scheduledWindows` is empty and exit. The bridge's `/dialogs/respond` does both steps automatically (v0.8.11+).
 
-**Caveat (2026-06-19 PM):** `closeAndUnschedule` reliably dismisses the modal visually and frees the `scheduledControllers` slot, but does NOT always cause `Dialog confirm:` to return `true` (or `false`) to its caller:
-
-- **UI-process caller (e.g. an action handler called via `/click`):** `Dialog confirm:` appears to return `nil` (or something non-boolean) — both `ifTrue:` and `ifFalse:` branches are skipped, the handler silently exits. `recordedAccept=true` from `/dialogs/respond` does NOT propagate as a `true` return.
-- **Serve-process caller (e.g. `Dialog confirm:` called via `/eval`):** `Dialog confirm:` never returns at all — the serve-process stays wedged in the modal wait loop indefinitely. The `/eval` HTTP call hangs.
-
-See [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) Bug #2 for reproductions and proposed fixes (likely: simulate the YesButton click instead of using `closeAndUnschedule`).
+**Status (2026-06-20 session-7):** Bug #2 is **FIXED in v0.8.12** by a `SimpleDialog>>choose:labels:values:default:for:` override that synthesizes the return value from `accept value` / `cancel value` after the force-close unwinds. Bridge-dismissed `Yes`/`No` confirms now return correct booleans, and partialFind:-style action handlers run to completion. See [`vw-bridge-known-issues.md`](./vw-bridge-known-issues.md) Bug #2 for the full architecture.
 
 ## Cascade modals (CRITICAL)
 
