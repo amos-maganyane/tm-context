@@ -95,8 +95,8 @@ testHealthReturnsCurrentVersion
 	body := self bodyOf: (self dispatch: 'GET /health HTTP/1.1').
 	self assert: (body indexOfSubCollection: '"status":"ok"') > 0
 		description: 'Health body missing status=ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"version":"0.8.12"') > 0
-		description: 'Health body missing version=0.8.12. Body: ' , body!
+	self assert: (body indexOfSubCollection: '"version":"0.8.13"') > 0
+		description: 'Health body missing version=0.8.13. Body: ' , body!
 
 testHealthDoesNotRequireAuth
 	"Health is intentionally auth-exempt for liveness probes."
@@ -178,3 +178,64 @@ testBug2DialogConfirmNoReturnsFalse
 		whileTrue: [(Delay forMilliseconds: 100) wait].
 	ret := Root.Smalltalk at: #TEST_BUG2_NO_RET.
 	self assert: ret == false description: 'Expected false, got: ' , ret printString! !
+
+!VWBridgeTest methodsFor: 'tests - logging'!
+
+testLogWritesNDJSONToFile
+	"v0.8.13: bridge log: writes a JSON-line to vw-bridge.log containing
+	 ts, level, and msg fields. Marker uniqueness via millisecondClockValue
+	 ensures we find OUR write, not some pre-existing line."
+	| marker contents |
+	marker := 'TEST_LOG_NDJSON_' , Time millisecondClockValue printString.
+	bridge log: marker.
+	contents := [bridge logFilePath asFilename readStream upToEnd]
+		on: Error do: [:ex | ''].
+	self assert: (contents indexOfSubCollection: marker startingAt: 1) > 0
+		description: 'Marker not in log file. Tail: ' ,
+			(contents copyFrom: ((contents size - 200) max: 1) to: contents size).
+	self assert: (contents indexOfSubCollection: '"level":"info"' startingAt: 1) > 0
+		description: 'Log file missing level:info field'.
+	self assert: (contents indexOfSubCollection: '"ts":' startingAt: 1) > 0
+		description: 'Log file missing ts field'.
+	self assert: (contents indexOfSubCollection: '"msg":' startingAt: 1) > 0
+		description: 'Log file missing msg field'!
+
+testLogLevelDistinction
+	"v0.8.13: logWarn: and logError: produce lines with distinguishable
+	 level field values."
+	| ts markerI markerW markerE contents |
+	ts := Time millisecondClockValue printString.
+	markerI := 'LEVEL_INFO_' , ts.
+	markerW := 'LEVEL_WARN_' , ts.
+	markerE := 'LEVEL_ERROR_' , ts.
+	bridge log: markerI.
+	bridge logWarn: markerW.
+	bridge logError: markerE.
+	contents := [bridge logFilePath asFilename readStream upToEnd]
+		on: Error do: [:ex | ''].
+	self assert: (contents indexOfSubCollection: markerI startingAt: 1) > 0
+		description: 'Info marker missing'.
+	self assert: (contents indexOfSubCollection: markerW startingAt: 1) > 0
+		description: 'Warn marker missing'.
+	self assert: (contents indexOfSubCollection: markerE startingAt: 1) > 0
+		description: 'Error marker missing'.
+	self assert: (contents indexOfSubCollection: '"level":"warn"' startingAt: 1) > 0
+		description: 'Warn level field missing'.
+	self assert: (contents indexOfSubCollection: '"level":"error"' startingAt: 1) > 0
+		description: 'Error level field missing'!
+
+testLogJsonLineWellFormed
+	"v0.8.13: each NDJSON line starts with a JSON object header and ends
+	 with a closing brace + LF. Sanity check that we are not emitting
+	 truncated or malformed entries."
+	| marker contents |
+	marker := 'JSON_FORM_' , Time millisecondClockValue printString.
+	bridge log: marker.
+	contents := [bridge logFilePath asFilename readStream upToEnd]
+		on: Error do: [:ex | ''].
+	self assert: (contents indexOfSubCollection: marker startingAt: 1) > 0
+		description: 'Marker missing in well-formed JSON test'.
+	self assert: (contents indexOfSubCollection: '{"ts":' startingAt: 1) > 0
+		description: 'No JSON object header found in log'.
+	self assert: (contents lastIndexOf: $}) > 0
+		description: 'Log file missing closing brace'! !
