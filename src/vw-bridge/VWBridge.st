@@ -1,13 +1,24 @@
-"=== VW Widget Bridge v0.8.13 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.9.0 -- /wait endpoint + 4 predicates (window-appears/dialog-appears/window-closes/dialog-closes) ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
- the endpoint list, design notes, validation procedure, and migration plan."
+ the endpoint list, design notes, validation procedure, and migration plan.
+ v0.9.0 (session-9): adds POST /wait endpoint with 4 predicate kinds
+ (window-appears/dialog-appears/window-closes/dialog-closes) plus shared
+ validation that rejects eval-truthy + compound predicates. Refactors
+ /windows + /dialogs to extract windowsSnapshotForWait + dialogsSnapshotForWait
+ internal methods so the /wait poll loop can reuse them without recursive
+ HTTP dispatch (Bug #5 avoidance). 4 new ivars are test seams for the
+ /wait poll loop (clockOverride / sleepOverride / scriptedWindowSnapshots /
+ scriptedDialogSnapshots) - production behavior unchanged when all four
+ are nil, which is the default. JSON parser extended to support nested
+ objects (was flat-only). HTTP 408 added to status code chain.
+ See plan/PLAN-PHASE-B-WAIT-ENDPOINT.md."
 
 Root.Smalltalk defineClass: #VWBridge
 	superclass: #{Core.Object}
 	indexedType: #none
 	private: false
-	instanceVariableNames: 'port listener process token '
+	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots '
 	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex '
 	imports: ''
 	category: 'VW-TestBridge'!
@@ -176,6 +187,106 @@ writeLogEntry: aMessage level: aLevel
 	 stream nextPut: Core.Character lf]
 		on: self errorClass do: [:ex | nil].
 	[stream close] on: self errorClass do: [:ex | nil]! !
+
+!VWBridge methodsFor: 'wait helpers'!
+
+windowsSnapshotForWait
+	"v0.9.0: Snapshot of currently-open windows. Used by /windows handler AND
+	 /wait window-appears / window-closes predicate evaluation. Wraps onUIDo:
+	 for safe UI-thread access. Returns OrderedCollection of window Dictionaries
+	 (same shape as /windows response body), or empty collection if UI is
+	 unavailable (modal block, etc).
+	 Test override: scriptedWindowSnapshots queue takes precedence. STICKY-queue
+	 behavior - while queue has more than 1 element, dequeue per call; when only
+	 1 left, keep returning it (steady-state). Empty queue returns empty
+	 collection. Never falls through to real UI when scripted is active - keeps
+	 test isolation strict. The sticky pattern lets SUnit fakes preload a finite
+	 sequence representing 'what's true at each point' without having to count
+	 exact poll iterations (which include a final-check after the loop ends)."
+	| list |
+	scriptedWindowSnapshots ifNotNil: [
+		scriptedWindowSnapshots isEmpty ifTrue: [^Core.OrderedCollection new].
+		^scriptedWindowSnapshots size > 1
+			ifTrue: [scriptedWindowSnapshots removeFirst]
+			ifFalse: [scriptedWindowSnapshots first]].
+	list := self onUIDo: [self windowSummaries].
+	list == nil ifTrue: [list := Core.OrderedCollection new].
+	^list!
+
+dialogsSnapshotForWait
+	"v0.9.0: Snapshot of currently-open dialogs. Used by /dialogs handler AND
+	 /wait dialog-appears / dialog-closes predicate evaluation. Wraps onUIDo:
+	 for safe UI-thread access. Returns OrderedCollection of dialog Dictionaries
+	 (describeDialog: shape), or nil if UI is unavailable.
+	 Test override: scriptedDialogSnapshots queue takes precedence with sticky-
+	 queue semantics (see windowsSnapshotForWait for the rationale)."
+	scriptedDialogSnapshots ifNotNil: [
+		scriptedDialogSnapshots isEmpty ifTrue: [^Core.OrderedCollection new].
+		^scriptedDialogSnapshots size > 1
+			ifTrue: [scriptedDialogSnapshots removeFirst]
+			ifFalse: [scriptedDialogSnapshots first]].
+	^self onUIDo: [self computeDialogsSnapshot]!
+
+computeDialogsSnapshot
+	"v0.9.0: Runs on UI process via dialogsSnapshotForWait. Returns OrderedCollection
+	 of dialog Dictionaries. Empty collection if SimpleDialog or ScheduledControllers
+	 are unavailable (catastrophic case - both are always present in normal image
+	 operation). Filtering via mgr scheduledControllers (instead of SimpleDialog
+	 allInstances) automatically excludes stale instances and the dialogSupplier
+	 singleton. Was doListDialogs pre-v0.9.0 - extracted so /wait predicates can
+	 reuse the same enumeration."
+	| err dialogs sdClass mgr |
+	err := self errorClass.
+	dialogs := Core.OrderedCollection new.
+	sdClass := self globalNamed: #SimpleDialog.
+	sdClass == nil ifTrue: [^dialogs].
+	mgr := self globalNamed: #ScheduledControllers.
+	mgr == nil ifTrue: [^dialogs].
+	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
+		([ctrl model isKindOf: sdClass] on: err do: [:ex | false]) ifTrue: [
+			dialogs add: (self describeDialog: ctrl model)]].
+	^dialogs!
+
+waitClockMilliseconds
+	"v0.9.0: Monotonic millisecond clock for /wait poll loops. Test override:
+	 clockOverride ivar - when non-nil, returned verbatim. Allows fake-clock
+	 tests for timeout/boundary behavior without real elapsed time."
+	^clockOverride ifNil: [
+		[Core.Time millisecondClockValue] on: self errorClass do: [:ex | 0]]!
+
+waitForMilliseconds: ms
+	"v0.9.0: Sleep for ms milliseconds in /wait poll loop. Test override:
+	 sleepOverride ivar (a Block) - when non-nil, called with the ms arg
+	 instead of actually sleeping. Allows fake-time progression in tests."
+	sleepOverride ifNotNil: [^sleepOverride value: ms].
+	[(Delay forMilliseconds: ms) wait] on: self errorClass do: [:ex | nil]!
+
+clockOverride: anInteger
+	"Test seam setter. When non-nil, waitClockMilliseconds returns this verbatim."
+	clockOverride := anInteger!
+
+sleepOverride: aBlock
+	"Test seam setter. When non-nil, waitForMilliseconds: calls this block
+	 with ms instead of actually sleeping."
+	sleepOverride := aBlock!
+
+scriptedWindowSnapshots: anOrderedCollection
+	"Test seam setter. When non-nil and non-empty, windowsSnapshotForWait
+	 dequeues from this instead of calling the real UI."
+	scriptedWindowSnapshots := anOrderedCollection!
+
+scriptedDialogSnapshots: anOrderedCollection
+	"Test seam setter. When non-nil and non-empty, dialogsSnapshotForWait
+	 dequeues from this instead of calling the real UI."
+	scriptedDialogSnapshots := anOrderedCollection!
+
+clearWaitOverrides
+	"Clear all 4 wait test seams. Call from VWBridgeWaitTest>>tearDown
+	 to restore production behavior."
+	clockOverride := nil.
+	sleepOverride := nil.
+	scriptedWindowSnapshots := nil.
+	scriptedDialogSnapshots := nil! !
 
 !VWBridge methodsFor: 'initialization'!
 
@@ -349,7 +460,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.13). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.9.0). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -358,7 +469,7 @@ dispatch: requestLine headers: headers body: bodyString
 	 the foot-gun.
 	 All routes:
 	   GET  /health /windows /windows/tree /value /menu /dialogs
-	   POST /click /type /menu/click /eval /dialogs/respond
+	   POST /click /type /menu/click /eval /dialogs/respond /wait
 	   PUT  /value
 	   OPTIONS *"
 	| proc depth err |
@@ -379,7 +490,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.13). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.9.0). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -398,7 +509,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.13"}'].
+				body: '{"status":"ok","version":"0.9.0"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -412,6 +523,7 @@ doDispatch: requestLine headers: headers body: bodyString
 		path = '/menu/click' ifTrue: [^self handleMenuClickBody: bodyString].
 		path = '/eval' ifTrue: [^self handleEvalBody: bodyString].
 		path = '/dialogs/respond' ifTrue: [^self handleDialogsRespondBody: bodyString].
+		path = '/wait' ifTrue: [^self handleWait: bodyString].
 		^self httpResponse: 404 type: 'application/json'
 			body: '{"error":"not_found","path":"' , path , '"}'].
 	method = 'PUT' ifTrue: [
@@ -447,10 +559,11 @@ split: aString on: aCharacter
 !VWBridge methodsFor: 'handlers'!
 
 handleWindows
-	| list |
-	list := self onUIDo: [self windowSummaries].
-	list == nil ifTrue: [list := Core.OrderedCollection new].
-	^self httpResponse: 200 type: 'application/json' body: (self jsonFor: list)!
+	"GET /windows - enumerate currently-open windows via windowsSnapshotForWait.
+	 v0.9.0: snapshot logic extracted into 'wait helpers' so /wait window-appears
+	 and /wait window-closes can reuse the same enumeration without a recursive
+	 HTTP dispatch (which would trip the Bug #5 re-entry guard)."
+	^self httpResponse: 200 type: 'application/json' body: (self jsonFor: self windowsSnapshotForWait)!
 
 handleTree
 	| list |
@@ -1200,39 +1313,24 @@ looksLikeRecursiveDispatch: aSource
 !VWBridge methodsFor: 'dialogs'!
 
 handleDialogsQuery
-	"GET /dialogs - enumerate live SimpleDialog (and subclass, e.g. ExtendedSimpleDialog) modals.
-	 Returns 200 with {ok:true, dialogs:[...]}. Empty array if no live
-	 modal OR if Dialog usesNativeDialogs is still true (native dialogs
-	 are invisible to VW introspection - run
+	"GET /dialogs - enumerate live SimpleDialog (and subclass, e.g. ExtendedSimpleDialog)
+	 modals via dialogsSnapshotForWait. Returns 200 with {ok:true, dialogs:[...]}.
+	 Empty array if no live modal OR if Dialog useNativeDialogs is still true
+	 (native dialogs are invisible to VW introspection - run
 	   Dialog useNativeDialogs: false
-	 via POST /eval after image restart to enable detection)."
-	| outcome |
-	outcome := self onUIDo: [self doListDialogs].
-	outcome == nil ifTrue: [outcome := '{"ok":false,"error":"ui_timeout","dialogs":[]}'].
-	^self httpResponse: 200 type: 'application/json' body: outcome!
-
-doListDialogs
-	"Runs on UI process. Returns JSON string.
-	 Enumerates SimpleDialog instances that are LIVE (i.e. in
-	 ScheduledControllers - have an open window). Filtering this way
-	 (instead of via SimpleDialog allInstances) automatically excludes
-	 stale instances and the dialogSupplier singleton."
-	| err dialogs response sdClass mgr |
-	err := self errorClass.
-	sdClass := self globalNamed: #SimpleDialog.
-	sdClass == nil ifTrue: [
-		^'{"ok":false,"error":"no_simple_dialog_class","dialogs":[]}'].
-	mgr := self globalNamed: #ScheduledControllers.
-	mgr == nil ifTrue: [
-		^'{"ok":false,"error":"no_scheduled_controllers","dialogs":[]}'].
-	dialogs := Core.OrderedCollection new.
-	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
-		([ctrl model isKindOf: sdClass] on: err do: [:ex | false]) ifTrue: [
-			dialogs add: (self describeDialog: ctrl model)]].
+	 via POST /eval after image restart to enable detection).
+	 v0.9.0: snapshot logic extracted into 'wait helpers' (dialogsSnapshotForWait +
+	 computeDialogsSnapshot) so /wait dialog-appears and /wait dialog-closes
+	 can reuse the same enumeration without recursive HTTP dispatch."
+	| snap response |
+	snap := self dialogsSnapshotForWait.
+	snap == nil ifTrue: [
+		^self httpResponse: 200 type: 'application/json'
+			body: '{"ok":false,"error":"ui_timeout","dialogs":[]}'].
 	response := Core.Dictionary new.
 	response at: 'ok' put: true.
-	response at: 'dialogs' put: dialogs.
-	^self jsonFor: response!
+	response at: 'dialogs' put: snap.
+	^self httpResponse: 200 type: 'application/json' body: (self jsonFor: response)!
 
 describeDialog: aSimpleDialog
 	"Build a Dictionary describing one live SimpleDialog (or any subclass):
@@ -1590,16 +1688,24 @@ jsonString: aString
 !VWBridge methodsFor: 'json parsing'!
 
 jsonParseFlat: aString
-	"Minimal JSON parser. Returns Dictionary keyed by String, values are
-	 String / Number / Boolean / nil / Array (via parseArray:). FLAT
-	 objects only - no nested objects (none needed for our request
-	 bodies). nil on parse error.
+	"JSON object parser. Returns Dictionary keyed by String. Values are
+	 String / Number / Boolean / nil / Array / nested Dictionary.
+	 v0.9.0: now supports nested objects (delegates to parseObject:cursor:
+	 which is recursive via parseAnyValue:). Name kept for backward compat
+	 with existing callers - 'Flat' is now a misnomer.
+	 Returns nil on parse error.
 	 Uses a 1-element-Core.Array cursor because VW forbids assigning to
 	 method args."
-	| cursor c dict key val |
+	| cursor |
 	aString isEmpty ifTrue: [^nil].
 	cursor := Core.Array with: 1.
 	self skipWs: aString cursor: cursor.
+	^self parseObject: aString cursor: cursor!
+
+parseObject: aString cursor: cursor
+	"v0.9.0: At opening {. Returns Dictionary or nil on error.
+	 Extracted from old jsonParseFlat: body so /wait can use nested objects."
+	| c dict key val |
 	c := self peek: aString cursor: cursor.
 	c = ${ ifFalse: [^nil].
 	self advance: cursor.
@@ -1669,13 +1775,15 @@ parseAnyValue: aString cursor: cursor
 	"Parse a JSON value (whitespace already skipped). Returns the value
 	 or nil. Note: a parsed JSON null also yields nil - callers should
 	 not distinguish missing-key from explicit-null.
-	 Supports: string / array / true / false / null / number.
-	 (Nested objects not supported - flat-object requests only.)"
+	 v0.9.0: supports nested objects via parseObject:cursor: (was
+	 string/array/scalars only).
+	 Supports: string / array / object / true / false / null / number."
 	| c start end |
 	c := self peek: aString cursor: cursor.
 	c == nil ifTrue: [^nil].
 	c = $" ifTrue: [^self parseQuotedString: aString cursor: cursor].
 	c = $[ ifTrue: [^self parseArray: aString cursor: cursor].
+	c = ${ ifTrue: [^self parseObject: aString cursor: cursor].
 	c = $t ifTrue: [^self matchKeyword: 'true' as: true in: aString cursor: cursor].
 	c = $f ifTrue: [^self matchKeyword: 'false' as: false in: aString cursor: cursor].
 	c = $n ifTrue: [^self matchKeyword: 'null' as: nil in: aString cursor: cursor].
@@ -1744,9 +1852,12 @@ httpResponse: code type: contentType body: bodyString
 									code = 405
 										ifTrue: ['Method Not Allowed']
 										ifFalse: [
-											code = 500
-												ifTrue: ['Internal Server Error']
-												ifFalse: ['Error']]]]]].
+											code = 408
+												ifTrue: ['Request Timeout']
+												ifFalse: [
+													code = 500
+														ifTrue: ['Internal Server Error']
+														ifFalse: ['Error']]]]]]].
 	out := Core.WriteStream on: Core.String new.
 	out nextPutAll: 'HTTP/1.1 ' , code printString , ' ' , reason; nextPutAll: crlf.
 	out nextPutAll: 'Content-Type: ' , contentType; nextPutAll: crlf.
@@ -1756,6 +1867,279 @@ httpResponse: code type: contentType body: bodyString
 	out nextPutAll: crlf.
 	out nextPutAll: bodyString.
 	^out contents! !
+
+!VWBridge methodsFor: 'wait handler'!
+
+handleWait: aBodyString
+	"v0.9.0 POST /wait - bridge predicate-wait endpoint. Parses JSON body,
+	 validates, then polls until predicate is satisfied or deadline reached.
+	 Returns 200 on success, 408 on timeout, 400 on bad request.
+	 Polls run on the serve process (listener forks per request, so blocking
+	 here is OK and does not stall the listener). Predicate evaluation calls
+	 windowsSnapshotForWait / dialogsSnapshotForWait directly - never goes
+	 through HTTP recursion, so Bug #5 Stage 1/2 guards are not in play.
+	 Test seams (clockOverride, sleepOverride, scriptedWindowSnapshots,
+	 scriptedDialogSnapshots) are honored automatically via the snapshot
+	 + clock + sleep helpers in 'wait helpers' category.
+	 Final-check after deadline ensures success wins boundary race.
+	 See plan/PLAN-PHASE-B-WAIT-ENDPOINT.md."
+	| spec start deadline polls result body |
+	spec := self parseAndValidateWaitRequest: aBodyString.
+	(spec at: 'ok') = false ifTrue: [
+		^self httpResponse: 400 type: 'application/json' 
+			body: (self jsonBadRequestBody: (spec at: 'message'))].
+	start := self waitClockMilliseconds.
+	deadline := start + (spec at: 'timeoutMs').
+	polls := 0.
+	result := nil.
+	[result := self evaluateWaitPredicate: spec.
+	 polls := polls + 1.
+	 (result at: 'satisfied') = true ifTrue: [
+		body := self waitSuccessBodyFor: spec result: result polls: polls
+			elapsedMs: self waitClockMilliseconds - start.
+		self log: 'wait satisfied kind=' , (spec at: 'kind').
+		^self httpResponse: 200 type: 'application/json' body: body].
+	 self waitClockMilliseconds >= deadline]
+		whileFalse: [self waitForMilliseconds: (spec at: 'intervalMs')].
+	"Final check - success wins boundary race"
+	result := self evaluateWaitPredicate: spec.
+	polls := polls + 1.
+	(result at: 'satisfied') = true ifTrue: [
+		body := self waitSuccessBodyFor: spec result: result polls: polls
+			elapsedMs: self waitClockMilliseconds - start.
+		^self httpResponse: 200 type: 'application/json' body: body].
+	"Timeout"
+	self logWarn: 'wait timeout kind=' , (spec at: 'kind').
+	body := self waitTimeoutBodyFor: spec result: result polls: polls
+		elapsedMs: self waitClockMilliseconds - start.
+	^self httpResponse: 408 type: 'application/json' body: body!
+
+parseAndValidateWaitRequest: aBodyString
+	"Parse + validate JSON. Returns Dictionary with key 'ok' (true|false).
+	 On ok=true: 'kind', 'timeoutMs', 'intervalMs', and predicate-specific
+	 keys ('match' Dict for window kinds, 'messageContains' for dialog kinds,
+	 'windowId' optional for window-closes, 'caseSensitive' optional).
+	 On ok=false: 'message' describes the validation error."
+	| parsed result kind timeout interval supportedKinds matchVal msgVal idVal hasId hasMatch |
+	parsed := [self jsonParseFlat: aBodyString] on: self errorClass do: [:ex | nil].
+	parsed == nil ifTrue: [^self waitErrorWithMessage: 'malformed JSON body'].
+	(parsed includesKey: 'predicates') ifTrue: [
+		^self waitErrorWithMessage: 'compound predicates not supported in MVP'].
+	kind := parsed at: 'kind' ifAbsent: [nil].
+	kind == nil ifTrue: [^self waitErrorWithMessage: 'missing required field: kind'].
+	kind = 'eval-truthy' ifTrue: [
+		^self waitErrorWithMessage: 'unsupported predicate kind: eval-truthy (excluded for safety)'].
+	(kind = 'all' or: [kind = 'any']) ifTrue: [
+		^self waitErrorWithMessage: 'compound predicates not supported in MVP: ' , kind].
+	supportedKinds := #('window-appears' 'dialog-appears' 'window-closes' 'dialog-closes').
+	(supportedKinds includes: kind) ifFalse: [
+		^self waitErrorWithMessage: 'unsupported predicate kind: ' , kind].
+	timeout := parsed at: 'timeoutMs' ifAbsent: [5000].
+	(timeout isKindOf: Core.Integer) ifFalse: [
+		^self waitErrorWithMessage: 'timeoutMs must be integer in [1, 60000]'].
+	(timeout < 1 or: [timeout > 60000]) ifTrue: [
+		^self waitErrorWithMessage: 'timeoutMs must be integer in [1, 60000]'].
+	interval := parsed at: 'intervalMs' ifAbsent: [100].
+	(interval isKindOf: Core.Integer) ifFalse: [
+		^self waitErrorWithMessage: 'intervalMs must be integer in [50, 1000]'].
+	(interval < 50 or: [interval > 1000]) ifTrue: [
+		^self waitErrorWithMessage: 'intervalMs must be integer in [50, 1000]'].
+	"Per-kind required fields."
+	kind = 'window-appears' ifTrue: [
+		matchVal := parsed at: 'match' ifAbsent: [nil].
+		(matchVal isKindOf: Core.Dictionary) ifFalse: [
+			^self waitErrorWithMessage: 'window-appears requires match object']].
+	(kind = 'dialog-appears' or: [kind = 'dialog-closes']) ifTrue: [
+		msgVal := parsed at: 'messageContains' ifAbsent: [nil].
+		(msgVal isKindOf: Core.String) ifFalse: [
+			^self waitErrorWithMessage: kind , ' requires messageContains string']].
+	kind = 'window-closes' ifTrue: [
+		idVal := parsed at: 'windowId' ifAbsent: [nil].
+		matchVal := parsed at: 'match' ifAbsent: [nil].
+		hasId := idVal isKindOf: Core.String.
+		hasMatch := matchVal isKindOf: Core.Dictionary.
+		(hasId or: [hasMatch]) ifFalse: [
+			^self waitErrorWithMessage: 'window-closes requires windowId or match']].
+	"Build validated spec dictionary."
+	result := Core.Dictionary new.
+	result at: 'ok' put: true.
+	result at: 'kind' put: kind.
+	result at: 'timeoutMs' put: timeout.
+	result at: 'intervalMs' put: interval.
+	(parsed includesKey: 'match') ifTrue: [result at: 'match' put: (parsed at: 'match')].
+	(parsed includesKey: 'messageContains') ifTrue: [result at: 'messageContains' put: (parsed at: 'messageContains')].
+	(parsed includesKey: 'windowId') ifTrue: [result at: 'windowId' put: (parsed at: 'windowId')].
+	(parsed includesKey: 'caseSensitive') ifTrue: [result at: 'caseSensitive' put: (parsed at: 'caseSensitive')].
+	^result!
+
+waitErrorWithMessage: aMessage
+	"Build a Dictionary marking parse/validation failure with explanation."
+	| d |
+	d := Core.Dictionary new.
+	d at: 'ok' put: false.
+	d at: 'message' put: aMessage.
+	^d!
+
+jsonBadRequestBody: aMessage
+	"Build JSON body string for 400 bad-request responses."
+	^'{"ok":false,"error":"bad-request","message":' , (self safeJsonFor: aMessage) , '}'!
+
+evaluateWaitPredicate: aSpec
+	"Dispatch to per-kind predicate evaluator. Returns Dictionary with
+	 'satisfied' (true|false) and predicate-specific result data."
+	| kind |
+	kind := aSpec at: 'kind'.
+	kind = 'window-appears' ifTrue: [^self evaluateWindowAppears: aSpec].
+	kind = 'dialog-appears' ifTrue: [^self evaluateDialogAppears: aSpec].
+	kind = 'window-closes' ifTrue: [^self evaluateWindowCloses: aSpec].
+	kind = 'dialog-closes' ifTrue: [^self evaluateDialogCloses: aSpec].
+	"Should not reach (validation rejects unknown kinds)."
+	^self waitResultNotSatisfied!
+
+evaluateWindowAppears: aSpec
+	"Returns satisfied=true with matched + matchCount when any window in
+	 the current snapshot matches the spec.match filter. Match is ALL-of-the
+	 -fields (every provided filter field must hold)."
+	| snapshot matchSpec matches result |
+	snapshot := self windowsSnapshotForWait.
+	matchSpec := aSpec at: 'match'.
+	matches := snapshot select: [:w | self windowMatches: w filter: matchSpec spec: aSpec].
+	matches isEmpty ifTrue: [^self waitResultNotSatisfied].
+	result := Core.Dictionary new.
+	result at: 'satisfied' put: true.
+	result at: 'matched' put: matches first.
+	result at: 'matchCount' put: matches size.
+	^result!
+
+evaluateDialogAppears: aSpec
+	"Returns satisfied=true with matched dialog when any dialog in the
+	 current snapshot has message containing messageContains substring.
+	 Honors caseSensitive (default false)."
+	| snapshot needle matches result caseSensitive |
+	snapshot := self dialogsSnapshotForWait.
+	snapshot == nil ifTrue: [^self waitResultNotSatisfied].
+	needle := aSpec at: 'messageContains'.
+	caseSensitive := aSpec at: 'caseSensitive' ifAbsent: [false].
+	matches := snapshot select: [:d | 
+		self waitSubstring: needle 
+			in: (d at: 'message' ifAbsent: ['']) 
+			caseSensitive: caseSensitive].
+	matches isEmpty ifTrue: [^self waitResultNotSatisfied].
+	result := Core.Dictionary new.
+	result at: 'satisfied' put: true.
+	result at: 'matched' put: matches first.
+	result at: 'matchCount' put: matches size.
+	^result!
+
+evaluateWindowCloses: aSpec
+	"Returns satisfied=true when no window matches windowId or match filter."
+	| snapshot matches result hasId targetId |
+	snapshot := self windowsSnapshotForWait.
+	hasId := aSpec includesKey: 'windowId'.
+	hasId 
+		ifTrue: [
+			targetId := aSpec at: 'windowId'.
+			matches := snapshot select: [:w | (w at: 'id' ifAbsent: [nil]) = targetId]]
+		ifFalse: [
+			matches := snapshot select: [:w | self windowMatches: w filter: (aSpec at: 'match') spec: aSpec]].
+	matches isEmpty ifFalse: [^self waitResultNotSatisfied].
+	result := Core.Dictionary new.
+	result at: 'satisfied' put: true.
+	result at: 'closed' put: true.
+	^result!
+
+evaluateDialogCloses: aSpec
+	"Returns satisfied=true when no dialog matches messageContains."
+	| snapshot needle matches result caseSensitive |
+	snapshot := self dialogsSnapshotForWait.
+	snapshot == nil ifTrue: [^self waitResultNotSatisfied].
+	needle := aSpec at: 'messageContains'.
+	caseSensitive := aSpec at: 'caseSensitive' ifAbsent: [false].
+	matches := snapshot select: [:d | 
+		self waitSubstring: needle 
+			in: (d at: 'message' ifAbsent: ['']) 
+			caseSensitive: caseSensitive].
+	matches isEmpty ifFalse: [^self waitResultNotSatisfied].
+	result := Core.Dictionary new.
+	result at: 'satisfied' put: true.
+	result at: 'closed' put: true.
+	^result!
+
+waitResultNotSatisfied
+	"Predicate-result Dictionary representing 'not yet satisfied'."
+	| d |
+	d := Core.Dictionary new.
+	d at: 'satisfied' put: false.
+	^d!
+
+windowMatches: aWindow filter: aFilter spec: aSpec
+	"True if aWindow matches ALL provided filter fields (appClass, title,
+	 titleContains). Honors aSpec caseSensitive (default false). Returns
+	 true if the filter is empty (no constraints to check)."
+	| caseSensitive actualClass actualTitle |
+	caseSensitive := aSpec at: 'caseSensitive' ifAbsent: [false].
+	actualClass := aWindow at: 'appClass' ifAbsent: [''].
+	actualTitle := aWindow at: 'title' ifAbsent: [''].
+	(aFilter includesKey: 'appClass') ifTrue: [
+		(self waitEquals: actualClass to: (aFilter at: 'appClass') caseSensitive: caseSensitive) 
+			ifFalse: [^false]].
+	(aFilter includesKey: 'title') ifTrue: [
+		(self waitEquals: actualTitle to: (aFilter at: 'title') caseSensitive: caseSensitive) 
+			ifFalse: [^false]].
+	(aFilter includesKey: 'titleContains') ifTrue: [
+		(self waitSubstring: (aFilter at: 'titleContains') 
+			in: actualTitle 
+			caseSensitive: caseSensitive) 
+			ifFalse: [^false]].
+	^true!
+
+waitEquals: anActual to: anExpected caseSensitive: aBool
+	"String equality with optional case sensitivity."
+	aBool ifTrue: [^anActual = anExpected].
+	^anActual asString asLowercase = anExpected asString asLowercase!
+
+waitSubstring: aNeedle in: aHaystack caseSensitive: aBool
+	"True if aHaystack contains aNeedle (substring). Honors case sensitivity.
+	 Uses 2-arg indexOfSubCollection:startingAt: per image API constraint
+	 (1-arg form errors on some receivers in this image)."
+	| n h |
+	aNeedle isEmpty ifTrue: [^true].
+	aHaystack isEmpty ifTrue: [^false].
+	aBool 
+		ifTrue: [n := aNeedle. h := aHaystack]
+		ifFalse: [n := aNeedle asString asLowercase. h := aHaystack asString asLowercase].
+	^(h indexOfSubCollection: n startingAt: 1) > 0!
+
+waitSuccessBodyFor: aSpec result: aResult polls: pollCount elapsedMs: elapsed
+	"Build JSON body string for 200 success response. Includes matched +
+	 matchCount when present (appears predicates), or closed:true +
+	 alreadySatisfied:true on the first-poll case (closes predicates)."
+	| body |
+	body := Core.Dictionary new.
+	body at: 'ok' put: true.
+	body at: 'kind' put: (aSpec at: 'kind').
+	body at: 'satisfied' put: true.
+	body at: 'elapsedMs' put: elapsed.
+	body at: 'polls' put: pollCount.
+	(aResult includesKey: 'matched') ifTrue: [
+		body at: 'matched' put: (aResult at: 'matched').
+		body at: 'matchCount' put: (aResult at: 'matchCount')].
+	(aResult includesKey: 'closed') ifTrue: [
+		body at: 'closed' put: true.
+		pollCount = 1 ifTrue: [body at: 'alreadySatisfied' put: true]].
+	^self jsonFor: body!
+
+waitTimeoutBodyFor: aSpec result: aResult polls: pollCount elapsedMs: elapsed
+	"Build JSON body string for 408 timeout response."
+	| body |
+	body := Core.Dictionary new.
+	body at: 'ok' put: false.
+	body at: 'kind' put: (aSpec at: 'kind').
+	body at: 'error' put: 'timeout'.
+	body at: 'message' put: 'Predicate was not satisfied before timeoutMs'.
+	body at: 'elapsedMs' put: elapsed.
+	body at: 'polls' put: pollCount.
+	^self jsonFor: body! !
 
 "v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
 Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
