@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.9 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.10 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -287,7 +287,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.9). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.8.10). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -317,7 +317,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.9). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.8.10). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -336,7 +336,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.9"}'].
+				body: '{"status":"ok","version":"0.8.10"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -707,7 +707,8 @@ urlDecode: aString
 !VWBridge methodsFor: 'menu helpers'!
 
 extractLabelText: anObject
-	"Extract label text from a String or wrapper (LabelWithAccessor etc).
+	"Extract label text from a String or wrapper (LabelWithAccessor,
+	 ComposedText, Text etc).
 	 IMPORTANT: LabelWithAccessor inherits Object>>displayString which
 	 returns printString - so displayString/text/string give us the
 	 wrapper's full description, NOT the wrapped label. Diagnostic-
@@ -717,9 +718,15 @@ extractLabelText: anObject
 	 Strategy: parse the printString FIRST (works for the standard
 	 '... for ''X''' / '... ''X''' wrapper printString conventions),
 	 fall back to accessor chain only if no quoted segment is found
-	 (covers Symbols and plain wrappers).
+	 (covers ComposedText/Text via #string, plain wrappers, and Symbols).
 	 Uses (Core.Character value: 39) for the single-quote char because
-	 $' is unreliable in chunk file-in."
+	 $' is unreliable in chunk file-in.
+	 v0.8.10 (Bug #4b full fix): replaced indexOf:startingAt: with
+	 nextIndexOf:from:to: - this VW image does NOT implement
+	 indexOf:startingAt: on String (probe-confirmed). The latent MNU
+	 was never triggered in production because menu items in this image
+	 have plain String labels (the printString PRIMARY path was only
+	 hit during Bug #4b view-tree walk against LabelWithAccessor)."
 	| err txt qch p1 p2 |
 	err := self errorClass.
 	anObject == nil ifTrue: [^''].
@@ -729,11 +736,13 @@ extractLabelText: anObject
 	qch := Core.Character value: 39.
 	p1 := txt indexOf: qch.
 	p1 > 0 ifTrue: [
-		p2 := txt indexOf: qch startingAt: p1 + 1.
+		p2 := [txt nextIndexOf: qch from: p1 + 1 to: txt size] on: err do: [:ex | 0].
 		p2 > p1 ifTrue: [^txt copyFrom: p1 + 1 to: p2 - 1]].
 	"FALLBACK: only if printString had no quoted segment.
-	 result ~= txt guards against returning the same garbage."
-	#(displayString text string) do: [:sel |
+	 result ~= txt guards against returning the same garbage. #string is
+	 listed first because ComposedText answers its raw text to #string but
+	 not to #displayString (which returns the class-name placeholder)."
+	#(string displayString text) do: [:sel |
 		(anObject respondsTo: sel) ifTrue: [
 			| result |
 			result := [anObject perform: sel] on: err do: [:ex | nil].
@@ -1166,16 +1175,20 @@ doListDialogs
 describeDialog: aSimpleDialog
 	"Build a Dictionary describing one live SimpleDialog (or any subclass):
 	 id, class, message text, button labels.
-	 v0.8.9 (Bug #4b fix): generalised over Dialog class. Message extraction
-	 tries several common aspect names (SimpleDialog uses
-	 #displayMessageString; subclasses like ExtendedSimpleDialog delegate
-	 building to a 'source' app model that may use different aspect names).
-	 Button extraction iterates ALL widgets and picks any spec whose class
-	 name contains 'Button' - covers ActionButtonSpec,
-	 PluggableActionButtonSpec, and any future *ButtonSpec variants. The
-	 'class' field tells callers which dialog subclass they're dealing with
-	 (47 SimpleDialog subclasses exist in this image)."
-	| d err builder comps msg btnLabels |
+	 v0.8.10 (Bug #4b full fix): three-tier extraction.
+	 Tier 1 (existing): namedComponents lookup via extractDialogMessageFrom: +
+	   extractDialogButtonsFrom: - SimpleDialog happy path where the builder
+	   registered named aspects.
+	 Tier 2 (NEW): view-tree walk via extractDialogFromView: - fallback when
+	   Tier 1 returned nothing (msg nil AND no buttons). Catches
+	   ExtendedSimpleDialog and similar subclasses that build their UI
+	   dynamically via dialogSubSpecSymbol-resolved windowSpecs without
+	   ever calling builder>>component:name:. The walk descends
+	   mainWindow component children and classifies leaves by class-name
+	   substring (*Button* / *Label*).
+	 The 'class' field always tells callers which dialog subclass they're
+	 dealing with (47 SimpleDialog subclasses exist in this image)."
+	| d err builder comps msg btnLabels root extracted |
 	err := self errorClass.
 	d := Core.Dictionary new.
 	d at: 'id' put: ([aSimpleDialog identityHash printString] on: err do: [:ex | nil]).
@@ -1183,11 +1196,22 @@ describeDialog: aSimpleDialog
 	builder := [aSimpleDialog builder] on: err do: [:ex | nil].
 	msg := nil.
 	btnLabels := Core.OrderedCollection new.
+	"Tier 1: namedComponents lookup."
 	builder ~~ nil ifTrue: [
 		comps := [builder namedComponents] on: err do: [:ex | nil].
 		comps ~~ nil ifTrue: [
 			msg := self extractDialogMessageFrom: comps.
 			btnLabels := self extractDialogButtonsFrom: comps]].
+	"Tier 2: view-tree walk when Tier 1 found nothing. Conservative
+	 condition (both empty) avoids overwriting partial Tier 1 results
+	 - if Tier 1 ever returns msg-only or buttons-only for a SimpleDialog
+	 subclass in the wild, refine here to merge per-field."
+	(msg == nil and: [btnLabels isEmpty]) ifTrue: [
+		root := [aSimpleDialog mainWindow component] on: err do: [:ex | nil].
+		root ~~ nil ifTrue: [
+			extracted := self extractDialogFromView: root.
+			msg := extracted at: 1.
+			btnLabels := extracted at: 2]].
 	d at: 'message' put: msg.
 	d at: 'buttons' put: btnLabels asArray.
 	^d!
@@ -1231,6 +1255,60 @@ extractDialogButtonsFrom: comps
 		ifFalse: [
 			(comps respondsTo: #do:) ifTrue: [comps do: iterBlock]].
 	^btnLabels!
+
+extractDialogFromView: aRootView
+	"Bug #4b Tier 2 (v0.8.10): depth-first walk of the dialog's view tree
+	 to find the message Label widget and the button widgets. Used when
+	 namedComponents is empty - typical for ExtendedSimpleDialog and other
+	 SimpleDialog subclasses that build their UI dynamically via
+	 dialogSubSpecSymbol-resolved windowSpecs without registering aspects
+	 on the builder.
+	 
+	 Algorithm:
+	  - DFS via #children (universal across View, Wrapper, CompositeView,
+	    VisualPart in this image - probe-confirmed 2026-06-20 session-5).
+	  - Identify candidates by runtime widget class-name substring:
+	      '*Button*' -> button (e.g. ActionButtonView)
+	      '*Label*'  -> message label (e.g. PassiveLabel, ActiveLabel)
+	    'Label' check excludes anything also matching 'Button' so a future
+	    LabelledButton-style class is still classified as button.
+	  - First non-empty label in DFS order becomes the message; ALL buttons
+	    are collected in DFS order. extractLabelText: unwraps ComposedText
+	    (PassiveLabel.label) via #string fallback, and LabelWithAccessor
+	    (ActionButtonView.label) via printString quoted-segment parsing.
+	  - Depth-capped at 12 - the deepest live SimpleDialog tree observed
+	    so far has depth 7, so 12 leaves comfortable headroom while bounding
+	    pathological cases.
+	 
+	 Stack is an OrderedCollection used as a LIFO via addFirst:/removeFirst;
+	 children pushed in reverse so they pop in original order (true DFS).
+	 
+	 Returns Core.Array with: messageOrNil with: buttonsOrderedCollection."
+	| err msg buttons stack maxDepth pair obj depth children clsName isButton isLabel lblObj txt |
+	err := self errorClass.
+	msg := nil.
+	buttons := Core.OrderedCollection new.
+	stack := Core.OrderedCollection new.
+	stack addFirst: (Core.Array with: aRootView with: 0).
+	maxDepth := 12.
+	[stack isEmpty] whileFalse: [
+		pair := stack removeFirst.
+		obj := pair at: 1.
+		depth := pair at: 2.
+		clsName := [obj class name asString] on: err do: [:ex | ''].
+		isButton := (clsName indexOfSubCollection: 'Button' startingAt: 1) > 0.
+		isLabel := ((clsName indexOfSubCollection: 'Label' startingAt: 1) > 0) and: [isButton not].
+		(isButton or: [isLabel]) ifTrue: [
+			lblObj := [obj label] on: err do: [:ex | nil].
+			txt := self extractLabelText: lblObj.
+			(txt ~~ nil and: [txt isEmpty not]) ifTrue: [
+				isButton ifTrue: [buttons add: txt].
+				(isLabel and: [msg == nil]) ifTrue: [msg := txt]]].
+		(depth < maxDepth and: [obj respondsTo: #children]) ifTrue: [
+			children := [obj children] on: err do: [:ex | nil].
+			(children ~~ nil and: [children respondsTo: #reverseDo:]) ifTrue: [
+				children reverseDo: [:c | stack addFirst: (Core.Array with: c with: depth + 1)]]]].
+	^Core.Array with: msg with: buttons!
 
 handleDialogsRespondBody: bodyString
 	"POST /dialogs/respond - dispatch a button click on the live modal.
