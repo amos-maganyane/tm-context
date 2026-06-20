@@ -57,7 +57,7 @@ If a selector you assume exists isn't listed here, **probe before using it.** Pr
 | Get all processes | ✓ `Process allInstances` (~200-300 procs) / ✗ `Processor allProcesses` | use `allInstances` |
 | Source code of method | ✗ `getSource` returns `nil` (sources stripped) | use `CompiledMethod>>messages`, `>>literals`, `>>numArgs`, `>>numTemps` for behavioral fingerprint |
 | Image-boot hooks | ✗ `Smalltalk addToStartUpList:` / ✗ `SessionManager instance` (returns `nil`!) | see Startup hook landscape |
-| Auto-load parcels at boot | ✗ no auto-load wired in this image | manual `Kernel.Parcel ensureLoadedParcel:withVersion:` — needs external trigger |
+| Auto-load parcels at boot | ✗ no auto-load wired in this image | manual `Kernel.Parcel loadParcelFrom: 'path\to\X.pcl' asFilename` — needs external trigger. **NOT** `ensureLoadedParcel:` (cache-only). See [Discovery + Load API quirks](#discovery--load-api-quirks-session-11--phase-f3-trap). |
 | Character literal in chunk file-in | ✗ `$'` is unreliable | `(Core.Character value: 39)` |
 | Global namespace for `Smalltalk`, `Core`, etc. | qualified prefix sometimes required | `Root.Smalltalk`, `Core.String`, `Core.Character`, `Core.Error`, `Core.Array`, `Core.Integer`, `Core.OrderedCollection`, `Core.Dictionary` |
 
@@ -364,6 +364,45 @@ Any auto-start mechanism for the VWBridge has to come from **outside the image**
 2. **`Kernel.ParcelLoadedChange`** — `Announcement` subclass (of `ComponentLoadedChange`). Has `#fileIn`, `#filename`, `#component:`, `#parameters`, `#systemVersion:`, `#version`. Listeners subscribe via the standard Announcement framework for cross-cutting reactions.
 3. **`Kernel.ParcelSavedChange`** — analogous for save events.
 4. **`Parcel>>runClassExtensionPostLoadMethods`** — calls `#initializeAfterLoad` on any class the parcel extends. The 5 stock implementors (`Application`, `Class`, `ClassDescription`, `Metaclass`, `AbsentClassImporterMetaclass`) are the system's own bookkeeping.
+
+### Discovery + Load API quirks (session-11 — Phase F3 trap)
+
+`Kernel.Parcel`'s headless load APIs are NOT filesystem-aware on demand. The name-cache is only populated for currently-loaded parcels — there is NO on-demand scan of the search path.
+
+| Selector | Behavior | Use |
+|---|---|---|
+| `parcels` | Returns `List` of currently-LOADED `Parcel` instances. | Inspect what's in image. |
+| `parcelNames` | Returns `List` of names — **LOADED-only** (identity-equal to `parcels collect: #name`). Does NOT scan filesystem. | **NOT** a discovery API. Use `Get-ChildItem` on `C:\visualworks931\parcels\` etc. for filesystem-side discovery. |
+| `findParcelNamed: aString` | Returns `Parcel` instance if LOADED, `nil` otherwise. | Test "is this name loaded?" — not "does this .pcl exist on disk?" |
+| `parcelNamed: aString` | Same as `findParcelNamed:` — LOADED-only lookup. | Same. |
+| `ensureLoadedParcel: aString withVersion: nilOrVer` | If name is in cache (== LOADED), no-op. If NOT in cache, raises **`ParcelMissingError`** (empty message text) — does NOT search the filesystem for `aString.pcl`. | Only useful for re-asserting a name is loaded. **NOT** the headless load-by-name API one would expect. |
+| `loadParcelFrom: aFilename` | **THIS is the headless load bypass.** Accepts explicit `Filename`, reads .pcl directly, returns the `Parcel` instance. Bypasses the name cache. | The actual "load a .pcl headless" API. Use `'C:\path\to\Thing.pcl' asFilename` as argument. |
+| `unloadParcelNamed: aString` | Returns `true` on success. Reversible cleanup for test-loads. | Always pair test-loads with this for clean state. |
+
+**Practical recipe** for headless test-load + cleanup:
+
+```smalltalk
+| loaded |
+loaded := Kernel.Parcel loadParcelFrom: 'C:\visualworks931\preview\64-bit\Thing.pcl' asFilename.
+"... do work ..."
+Kernel.Parcel unloadParcelNamed: 'Thing'.
+```
+
+**`Parcel` instance introspection surface is NARROW** (most expected selectors are absent in this build):
+
+| Works | Errors with `MessageNotUnderstood` |
+|---|---|
+| `name`, `version`, `versionString`, `summary`, `comment`, `bundleName`, `isLoaded`, `isDirty`, `postLoad:`, `postUnloadBlock`, `definedClasses`, `definedBindings`, `extendedClasses`, `extensionMethods`, `hasExtensions`, `classesAndSelectorsDo:`, `definedNameSpaces`, `definedObjects` | `file`, `fileName`, `prerequisites`, `components`, `codeComponents`, `classes`, `classDefinitions`, `extensions`, `classExtensions`, `bindings`, `releaseInformation`, `parameters`, `hidden`, `date`, `fullName` |
+
+For inspecting what a parcel contributed, use `definedClasses` + `extendedClasses` + `extensionMethods` (instance side).
+
+### NAMING TRAP — `ImageWriter.pcl` is NOT a pixel encoder (session-11 Phase F3)
+
+`C:\visualworks931\preview\64-bit\ImageWriter.pcl` is the **VW VM-snapshot (.im file) converter**, NOT a pixel image (PNG/JPEG/BMP) encoder. Defined classes: `VirtualImage`, `McCartneyImage`, `VirtualImageBytes`, `SixtyFourBitVirtualImage`, `HugeArray`. Parcel comment: *"image conversion framework which can read virtual image files and write them out... convert 32-bit virtual images to 64-bit virtual images."* The term "image" here means "memory snapshot of the running VM," not bitmap pixels.
+
+**Confirmed via session-11 image-wide hunt** across all 312 namespaces / 10,216 bindings: there is **NO** pixel-image-encoder class (`*ImageWriter*`, `*ImageEncoder*`, `*BitmapWriter*`, `*BMPWriter*`, `*TIFF*`, `*WebP*` all count=0). `Graphics.ImageReader` hierarchy has 5 readers and zero writer peer. `LibJPEG-turbo` (loaded) is decode-only despite the upstream library supporting encode. `Graphics.PNGImageReader` has 41 instance methods, all decode/filter/chunk-process; zero write methods.
+
+If you need pixel-image encoding (PNG/JPEG/etc.) in this image: it is NOT in any stock VW pundle. Path forward is OS-level subprocess (PowerShell System.Drawing) or hand-rolled Smalltalk encoder using loaded `Compression-ZLib` / `HashesBase` primitives. See [`../plan/PLAN-PHASE-F-SCREENSHOT.md`](../plan/PLAN-PHASE-F-SCREENSHOT.md) Q1 section.
 
 ### Search path (verified)
 
