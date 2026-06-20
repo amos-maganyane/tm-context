@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.10 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.11 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -287,7 +287,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.10). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.8.11). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -317,7 +317,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.10). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.8.11). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -336,7 +336,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.10"}'].
+				body: '{"status":"ok","version":"0.8.11"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -1332,14 +1332,33 @@ handleDialogsRespondBody: bodyString
 		ifFalse: [self httpResponse: 400 type: 'application/json' body: outcome]!
 
 doRespondDialog: choice
-	"Runs on UI process. Finds the live SimpleDialog ScheduledController,
-	 records the outcome via accept/cancel ValueHolders, then
-	 closeAndUnschedule. closeAndUnschedule bypasses the wedged modal
-	 loop - the loop notices the window-gone signal on its next
-	 iteration (typically immediate because the OS-close event wakes it
-	 up). Setting accept/cancel alone from a foreign process doesn't
-	 reliably wake the modal loop, so closeAndUnschedule is essential."
-	| err choiceStr sdClass mgr target wantsAccept wantsCancel |
+	"v0.8.11 - Runs on bridge serve process (NOT UI process - mgr activeControllerProcess
+	 returns nil while a modal is up, so onUIDo: falls back to direct execution).
+	 
+	 1. Records the outcome via the SimpleDialog model's accept/cancel ValueHolders.
+	 2. Calls target closeAndUnschedule - destroys the OS window.
+	 3. v0.8.11: calls purgeWedgedDialogProcesses - wakes the wedged modal loop.
+	 
+	 WHY THE PURGE (session-6 discovery): closeAndUnschedule destroys the OS window
+	 but does NOT push a Destroy event into the modal loop's EventQueue. The fork
+	 running [Dialog confirm: ...] is blocked deep in:
+	   ApplicationDialogController>>eventLoop -> WindowManager>>processNextEvent
+	   -> EventQueue>>next -> Semaphore>>waitIfCurtailedSignal
+	 ...and never sees the OS-level destruction. Pre-v0.8.11 result: SILENT,
+	 PERMANENT wedge of the forking process (no debugger, no exception, just hung).
+	 Calling purgeDeadWindows on the wedged WindowManager (found via Process
+	 allInstances stack walk) makes the loop notice the dead window and exit.
+	 
+	 KNOWN LIMITATION (Bug #2 Symptom A persists): Dialog confirm: returns nil
+	 (not the accept ValueHolder's value) when dismissed externally - the
+	 dialog framework hardcodes the force-close return path. For partialFind:'s
+	 (Dialog confirm: ...) ifTrue: [...] pattern this raises MustBeBoolean in
+	 the forking process. v0.8.11 makes that failure VISIBLE and RECOVERABLE
+	 instead of silent. The real Symptom A fix needs either OS event injection
+	 (synthetic mouse click on YesButton, hard) or a Dialog>>confirm: override
+	 that reads accept value on force-close (MAS-side change). See
+	 knowledge/vw-bridge-known-issues.md Bug #2 for the full investigation."
+	| err choiceStr sdClass mgr target wantsAccept wantsCancel purgedCount |
 	err := self errorClass.
 	sdClass := self globalNamed: #SimpleDialog.
 	sdClass == nil ifTrue: [
@@ -1360,12 +1379,63 @@ doRespondDialog: choice
 		[target model accept value: true] on: err do: [:ex | nil]].
 	wantsCancel ifTrue: [
 		[target model cancel value: true] on: err do: [:ex | nil]].
-	"Force close at the controller level - this wakes the modal loop."
+	"Force close at the controller level - destroys the OS window."
 	[target closeAndUnschedule] on: err do: [:ex |
 		^'{"ok":false,"error":"close_failed","message":' , (self safeJsonFor: ex description) , '}'].
+	"v0.8.11: purge wedged modal-loop processes so they don't hang forever."
+	purgedCount := [self purgeWedgedDialogProcesses] on: err do: [:ex | 0].
 	^'{"ok":true,"choice":' , (self safeJsonFor: choiceStr) ,
-		',"method":"closeAndUnschedule","recordedAccept":' , wantsAccept printString ,
-		',"recordedCancel":' , wantsCancel printString , '}'! !
+		',"method":"closeAndUnschedule+purgeDeadWindows","recordedAccept":' , wantsAccept printString ,
+		',"recordedCancel":' , wantsCancel printString ,
+		',"purgedWedged":' , purgedCount printString , '}'!
+
+purgeWedgedDialogProcesses
+	"v0.8.11 - find any Process suspended inside ApplicationDialogController>>eventLoop
+	 and call purgeDeadWindows on its WindowManager. This wakes a modal loop that
+	 is wedged after a closeAndUnschedule destroyed its OS window without notifying
+	 the WindowManager's EventQueue.
+	 
+	 Returns the count of wedged processes that were unwedged. Safe to call when
+	 no wedged processes exist (returns 0). Caller (doRespondDialog:) calls this
+	 RIGHT AFTER closeAndUnschedule; in normal operation count will be 1 (the
+	 fork that called Dialog confirm:). Higher counts indicate accumulated
+	 pre-v0.8.11 wedges from earlier dismissals.
+	 
+	 IMPLEMENTATION: walks Process allInstances (~200-300 procs, fast filter)
+	 looking for a suspended context with ApplicationDialogController as a
+	 receiver. For each match, walks the same context for a WindowManager
+	 receiver, then sends purgeDeadWindows. All operations are wrapped in
+	 Error handlers - GC-collected processes, partially-walked contexts,
+	 and inaccessible WindowManagers all return 0/no-op silently."
+	| err procClass procs wedged count |
+	err := self errorClass.
+	procClass := self globalNamed: #Process.
+	procClass == nil ifTrue: [^0].
+	procs := [procClass allInstances asArray] on: err do: [:ex | #()].
+	count := 0.
+	wedged := procs select: [:p |
+		| walk found |
+		walk := [p suspendedContext] on: err do: [:ex | nil].
+		found := false.
+		[walk ~~ nil and: [found not]] whileTrue: [
+			| rc |
+			rc := [walk receiver class name asString] on: err do: [:ex | ''].
+			(rc = 'ApplicationDialogController') ifTrue: [found := true].
+			walk := [walk sender] on: err do: [:ex | nil]].
+		found].
+	wedged do: [:p |
+		| walk wm |
+		walk := [p suspendedContext] on: err do: [:ex | nil].
+		wm := nil.
+		[walk ~~ nil and: [wm == nil]] whileTrue: [
+			| rec rc |
+			rec := [walk receiver] on: err do: [:ex | nil].
+			rc := rec == nil ifTrue: [''] ifFalse: [[rec class name asString] on: err do: [:ex | '']].
+			(rc = 'WindowManager') ifTrue: [wm := rec].
+			walk := [walk sender] on: err do: [:ex | nil]].
+		wm ~~ nil ifTrue: [
+			[wm purgeDeadWindows. count := count + 1] on: err do: [:ex | nil]]].
+	^count! !
 
 !VWBridge methodsFor: 'ui process'!
 
