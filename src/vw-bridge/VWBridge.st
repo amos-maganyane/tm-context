@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.5 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.8 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -8,7 +8,7 @@ Root.Smalltalk defineClass: #VWBridge
 	indexedType: #none
 	private: false
 	instanceVariableNames: 'port listener process token '
-	classInstanceVariableNames: 'singleton '
+	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex '
 	imports: ''
 	category: 'VW-TestBridge'!
 
@@ -39,6 +39,37 @@ stop
 
 singleton
 	^singleton! !
+
+!VWBridge class methodsFor: 'dispatch tracking'!
+
+incrementDispatchDepthFor: aProcess
+	"Bug #5 Stage 2: atomically increment + return the per-process
+	 dispatch depth. Lazy-inits the mutex + dictionary on first call so
+	 a fresh class redefinition doesn't need an explicit reset.
+	 Uses IdentityDictionary keyed by Process so two different processes
+	 dispatching concurrently never collide."
+	| depth |
+	dispatchDepthMutex == nil ifTrue: [
+		dispatchDepthMutex := Core.Semaphore forMutualExclusion].
+	dispatchDepthByProcess == nil ifTrue: [
+		dispatchDepthByProcess := Core.IdentityDictionary new].
+	dispatchDepthMutex critical: [
+		depth := dispatchDepthByProcess at: aProcess ifAbsent: [0].
+		depth := depth + 1.
+		dispatchDepthByProcess at: aProcess put: depth].
+	^depth!
+
+decrementDispatchDepthFor: aProcess
+	"Bug #5 Stage 2: atomic decrement. Removes the entry when depth
+	 reaches 0 so the dictionary doesn't leak entries for short-lived
+	 per-connection processes."
+	(dispatchDepthMutex == nil or: [dispatchDepthByProcess == nil]) ifTrue: [^self].
+	dispatchDepthMutex critical: [
+		| depth |
+		depth := dispatchDepthByProcess at: aProcess ifAbsent: [0].
+		depth <= 1
+			ifTrue: [dispatchDepthByProcess removeKey: aProcess ifAbsent: [nil]]
+			ifFalse: [dispatchDepthByProcess at: aProcess put: depth - 1]]! !
 
 !VWBridge methodsFor: 'accessing'!
 
@@ -256,11 +287,38 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.5). All routes:
+	"Main dispatcher (v0.8.8). Wraps doDispatch:headers:body: with a
+	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
+	 synchronously call back into dispatch: on the same process, we
+	 detect the recursion via per-process depth counter and fail fast
+	 with 400 instead of wedging the listener and the UI. Combined
+	 with the Stage 1 substring check in handleEvalBody:, this contains
+	 the foot-gun.
+	 All routes:
 	   GET  /health /windows /windows/tree /value /menu /dialogs
 	   POST /click /type /menu/click /eval /dialogs/respond
 	   PUT  /value
 	   OPTIONS *"
+	| proc depth err |
+	err := self errorClass.
+	proc := [(self globalNamed: #Processor) activeProcess] on: err do: [:ex | nil].
+	proc == nil ifTrue: [
+		^self doDispatch: requestLine headers: headers body: bodyString].
+	depth := self class incrementDispatchDepthFor: proc.
+	depth > 1 ifTrue: [
+		"Re-entry from /eval (or any same-process caller). Refuse so the
+		 listener and the UI don't wedge. The decrement here balances
+		 the increment above; no ensure: block needed since we return."
+		self class decrementDispatchDepthFor: proc.
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"recursive_dispatch","depth":' , depth printString ,
+				',"hint":"/eval cannot re-enter VWBridge dispatch: - see Bug #5. Call handler methods directly (e.g. VWBridge singleton handleWindows) or run tests from a VW workspace."}'].
+	^[self doDispatch: requestLine headers: headers body: bodyString]
+		ensure: [self class decrementDispatchDepthFor: proc]!
+
+doDispatch: requestLine headers: headers body: bodyString
+	"Actual dispatch logic (v0.8.8). Called by dispatch:headers:body:
+	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
 	authResp ~~ nil ifTrue: [^authResp].
@@ -278,7 +336,7 @@ dispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.5"}'].
+				body: '{"status":"ok","version":"0.8.8"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -491,9 +549,19 @@ doClick: aspect inWindow: winTitle
 	   dead end. Buttons in this image use a PluggableAdaptor whose
 	   setter block invokes the configured action callback when value:
 	   is sent. Sending  wrapper widget model value: true  fires the
-	   click. The same approach naturally selects radios / list rows /
-	   tabs whose model is a ValueHolder driven by the widget."
-	| r w err model oldVal result |
+	   click. The same approach naturally selects list rows / tabs
+	   whose model is a ValueHolder driven by the widget.
+
+	 v0.8.7 (Bug #1 fix): RadioButtonSpec is handled specially because
+	 several radios commonly share a single ValueHolder (e.g.
+	 PartySearchView's 7 searchCriteriaType radios all share
+	 #searchCriteriaType). Setting value: true would corrupt that
+	 shared holder with a literal boolean instead of the radio's
+	 selection symbol. For radios we use  model value: spec select
+	 which writes the correct Symbol (e.g. #contractNumber, #id).
+	 The method field in the response distinguishes which path was
+	 taken (model_value_true vs model_value_spec_select)."
+	| r w err spec model oldVal result clickValue method radioCls |
 	err := self errorClass.
 	r := self resolveAspect: aspect inWindowMatching: winTitle.
 	(r at: 3) ~~ nil ifTrue: [^r at: 3].
@@ -502,10 +570,19 @@ doClick: aspect inWindow: winTitle
 	model == nil ifTrue: [
 		^'{"error":"no_model","aspect":"' , aspect , '"}'].
 	oldVal := [model value] on: err do: [:ex | nil].
-	result := [model value: true. nil] on: err do: [:ex |
+	spec := [w spec] on: err do: [:ex | nil].
+	radioCls := self globalNamed: #RadioButtonSpec.
+	(spec ~~ nil and: [radioCls ~~ nil and: [spec isKindOf: radioCls]])
+		ifTrue: [
+			clickValue := [spec select] on: err do: [:ex | true].
+			method := 'model_value_spec_select']
+		ifFalse: [
+			clickValue := true.
+			method := 'model_value_true'].
+	result := [model value: clickValue. nil] on: err do: [:ex |
 		'{"error":"click_failed","message":"' , ex description , '"}'].
 	^result == nil
-		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","method":"model_value_true","oldValue":' , (self safeJsonFor: oldVal printString) , '}']
+		ifTrue: ['{"ok":true,"aspect":"' , aspect , '","method":"' , method , '","oldValue":' , (self safeJsonFor: oldVal printString) , ',"newValue":' , (self safeJsonFor: clickValue printString) , '}']
 		ifFalse: [result]!
 
 handleTypeBody: bodyString
@@ -1000,6 +1077,13 @@ handleEvalBody: bodyString
 	 Runs on the bridge's serve process; UI-touching code must wrap itself
 	 (see top docstring). Returns JSON.
 	 Empty body -> 400 empty_body.
+	 Bug #5 Stage 1 mitigation (v0.8.8): body containing both 'VWBridge'
+	 AND 'dispatch' substrings -> 400 recursive_dispatch_forbidden. This
+	 is a textual heuristic - the real defense-in-depth is the per-
+	 process re-entry counter in dispatch:headers:body: (Stage 2). The
+	 substring filter still allows direct handler calls (e.g.
+	 'VWBridge singleton handleWindows' has no 'dispatch') so the
+	 documented workaround #1 keeps working.
 	 Compile / runtime error -> 400 eval_failed with the exception description.
 	 Success -> 200 ok=true result=<printString of evaluated expression>."
 	| err result compiler printed |
@@ -1007,6 +1091,9 @@ handleEvalBody: bodyString
 	(bodyString == nil or: [bodyString isEmpty]) ifTrue: [
 		^self httpResponse: 400 type: 'application/json'
 			body: '{"error":"empty_body"}'].
+	(self looksLikeRecursiveDispatch: bodyString) ifTrue: [
+		^self httpResponse: 400 type: 'application/json'
+			body: '{"error":"recursive_dispatch_forbidden","hint":"/eval body references both ''VWBridge'' and ''dispatch'' - cannot call back into the bridge dispatcher (Bug #5). Call handler methods directly (e.g. VWBridge singleton handleWindows) or run tests from a VW workspace."}'].
 	compiler := self globalNamed: #Compiler.
 	compiler == nil ifTrue: [
 		^self httpResponse: 500 type: 'application/json'
@@ -1017,12 +1104,32 @@ handleEvalBody: bodyString
 				(self safeJsonFor: ex description) , '}'].
 	printed := [result printString] on: err do: [:ex | 'PRINT_FAILED'].
 	^self httpResponse: 200 type: 'application/json'
-		body: '{"ok":true,"result":' , (self safeJsonFor: printed) , '}'! !
+		body: '{"ok":true,"result":' , (self safeJsonFor: printed) , '}'!
+
+looksLikeRecursiveDispatch: aSource
+	"Bug #5 Stage 1: substring heuristic that returns true when an /eval
+	 body looks like it's trying to re-enter the dispatcher. Requires
+	 BOTH 'VWBridge' AND 'dispatch' substrings (case-sensitive) to be
+	 present so legitimate workarounds keep working:
+	   ALLOWED: 'VWBridge singleton handleWindows' (no 'dispatch')
+	   ALLOWED: 'Dialog useNativeDialogs: false' (no 'VWBridge')
+	   BLOCKED: 'VWBridge singleton dispatch: ''GET /health ...'''
+	   BLOCKED: 'bridge := VWBridge singleton. bridge dispatch: ...'
+	 Brittle by design - the per-process re-entry counter in
+	 dispatch:headers:body: (Stage 2) is the real defense and catches
+	 indirect paths this substring filter misses."
+	| s hasBridge hasDispatch |
+	aSource == nil ifTrue: [^false].
+	s := aSource asString.
+	hasBridge := (s indexOfSubCollection: 'VWBridge' startingAt: 1) > 0.
+	hasBridge ifFalse: [^false].
+	hasDispatch := (s indexOfSubCollection: 'dispatch' startingAt: 1) > 0.
+	^hasDispatch! !
 
 !VWBridge methodsFor: 'dialogs'!
 
 handleDialogsQuery
-	"GET /dialogs - enumerate live SimpleDialog modals.
+	"GET /dialogs - enumerate live SimpleDialog (and subclass, e.g. ExtendedSimpleDialog) modals.
 	 Returns 200 with {ok:true, dialogs:[...]}. Empty array if no live
 	 modal OR if Dialog usesNativeDialogs is still true (native dialogs
 	 are invisible to VW introspection - run
@@ -1049,7 +1156,7 @@ doListDialogs
 		^'{"ok":false,"error":"no_scheduled_controllers","dialogs":[]}'].
 	dialogs := Core.OrderedCollection new.
 	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
-		([ctrl model class == sdClass] on: err do: [:ex | false]) ifTrue: [
+		([ctrl model isKindOf: sdClass] on: err do: [:ex | false]) ifTrue: [
 			dialogs add: (self describeDialog: ctrl model)]].
 	response := Core.Dictionary new.
 	response at: 'ok' put: true.
@@ -1133,7 +1240,7 @@ doRespondDialog: choice
 	mgr == nil ifTrue: [
 		^'{"ok":false,"error":"no_scheduled_controllers"}'].
 	target := [mgr scheduledControllers detect: [:c |
-		[c model class == sdClass] on: err do: [:ex | false]
+		[c model isKindOf: sdClass] on: err do: [:ex | false]
 	] ifNone: [nil]] on: err do: [:ex | nil].
 	target == nil ifTrue: [
 		^'{"ok":false,"error":"no_live_dialog","hint":"Dialog useNativeDialogs may still be true - use POST /eval to toggle off"}'].
