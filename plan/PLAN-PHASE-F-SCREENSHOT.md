@@ -1,8 +1,125 @@
 # Plan — Phase F /screenshot endpoint
 
 **Written:** 2026-06-20 (session-10), after Oracle F1 design consult + F2 graphics-API probe.
-**Status:** Foundation complete. **F3 implementation BLOCKED** on resolving the PNG-encoder question (probe finding below). The Oracle-recommended API shape is locked.
+**Updated:** 2026-06-20 (session-11), Q1 resolved — Path A REFUTED across 6 probes. Oracle F3 consult fired (`bg_3e72b537`); decision between Path B (subprocess) and Path C (hand-rolled) pending.
+**Status:** F1 design LOCKED. F2 probe done. **F3 Q1 RESOLVED, Q2/Q3/Q4 awaiting Oracle F3.** Implementation BLOCKED until path decision.
 **Pre-reqs:** v0.9.0 bridge with /wait endpoint shipped.
+
+---
+
+## Session-11 progress (NEW)
+
+### Q1 RESOLUTION — Path A REFUTED
+
+Resolved via 6 probes in session-11. Summary table:
+
+| Probe | Finding |
+|---|---|
+| `Kernel.Parcel parcels` and `parcelNames` | Both return identical 112-element List → **`parcelNames` is LOADED-only** (essentially `parcels collect: #name`); does NOT scan filesystem. New API contract row. |
+| Filesystem scan `C:\visualworks931\` recursive `*.pcl` | 425+ parcels across canonical `parcels\`, `preview\`, `packaging\`, `contributed\`, `seaside\`, etc. Only **1 name-match candidate**: `preview\64-bit\ImageWriter.pcl` (65 KB) |
+| `ensureLoadedParcel: 'ImageWriter' withVersion: nil` | FAILED with `ParcelMissingError` (empty message) — name cache empty for unloaded parcels |
+| `findParcelNamed:` / `parcelNamed:` for unloaded names | Both return `nil` — confirms cache is LOADED-only; no on-demand filesystem scan |
+| `loadParcelFrom: '...\ImageWriter.pcl' asFilename` | **SUCCEEDED** (+1 parcel, returned `Parcel parcelNamed: 'ImageWriter'`) but **0 new bindings** in any namespace, 0 new selectors on `Graphics.Image` |
+| Parcel introspection: `pcl summary` + `pcl comment` | Revealed `ImageWriter.pcl` is the **64-bit VM-snapshot converter** (defined classes `VirtualImage`, `McCartneyImage`, `VirtualImageBytes`, `SixtyFourBitVirtualImage`, `HugeArray`). Comment: *"image conversion framework which can read virtual image files and write them out... convert 32-bit virtual images to 64-bit"*. NOT a pixel encoder. Zero-diff explained: classes already resident in `storedev64.im` (itself a 64-bit-converted image). |
+
+Image-wide hunt across all 312 namespaces / 10,216 bindings:
+- `*ImageWriter*` | `*ImageEncoder*` | `*BitmapWriter*` | `*BMPWriter*` | `*TIFF*` | `*WebP*` → **count = 0** (NOTHING)
+- `Graphics.ImageReader` subclasses: `JPEGImageReader`, `XBMImageReader`, `PNGImageReader`, `BMPImageReader`, `GIFImageReader` → **5 readers, ZERO writer peer**
+- `Graphics.ImageReader` instance methods matching `write|put|encode|store|emit|stream` → **count = 0**
+- `Graphics.PNGImageReader` 41 instance + 3 class-side selectors: ALL decode/filter/chunk-process (`copyPixelsRGB:`, `filterPaeth:`, `processIDATChunk`, `readImage`); ZERO write methods
+- `LibJPEG-turbo` (LOADED) 5 classes: `JPEGColorComponent`, `JPEGHuffmanTable`, `JPEGImageReader`, `LibJPEGTurboInterface`, `LibJPEGTurboInterfaceDictionary` — **DECODE ONLY** despite libjpeg-turbo upstream supporting encode
+
+Cleanup: `Kernel.Parcel unloadParcelNamed: 'ImageWriter'` → returned `true`, baseline (112 parcels) restored. ✓
+
+**VERDICT: No pixel-image-encoder exists anywhere in this VW 9.3.1 image. Path A is DEAD.**
+
+### Loaded primitives potentially relevant for Path C (hand-rolled PNG)
+
+- `Compression-Zip` (LOADED) — Zip format framework with DEFLATE
+- `Compression-ZLib` (LOADED) — raw zlib (PNG IDAT compression layer)
+- `HashesBase` (LOADED) — likely contains CRC32 (PNG chunk integrity check)
+- `Xtreams-Compression` (LOADED) — alternative streaming compression
+- Binary `WriteStream` availability unknown — needs probe (deferred until path decision)
+
+### Capture-side (Q2) status
+
+NOT resolved yet. But if Oracle picks Path B, Q2 collapses entirely (subprocess does capture + encode in one call).
+
+### Oracle F3 verdict — Path B (PowerShell System.Drawing subprocess)
+
+Oracle F3 returned (bg_3e72b537, 2m 16s) with high confidence + 7-section implementation plan. **Path C eliminated** because it still lacks a Smalltalk-side capture primitive — would degrade into "subprocess capture + Smalltalk encode" which is strictly worse than letting .NET do both.
+
+Key Oracle decisions:
+- **Window resolution stays in VW**. Resolve `appClass`+`titleContains` in Smalltalk, return 404/409 BEFORE invoking PowerShell.
+- **NEVER concatenate strings into PowerShell source**. Pass only validated INT rectangle coords + mode.
+- **Capture via `Graphics.FromImage($bitmap).CopyFromScreen(...)`** — NOT `FromHwnd`. Captures the composited desktop rectangle.
+- **Bytes channel**: PowerShell `[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)`. NOT `Write-Output`/`Write-Host`/pipeline (text-mangling risk).
+- **Multi-monitor**: Full virtual screen by default via `[SystemInformation]::VirtualScreen`, including negative `Left`/`Top` coords.
+- **Q3 (UI isolation) confirmed**: zero UI work for screen target; window target needs quick `onUIDo:` snapshot for window-resolution; subprocess does capture+encode on serve-process.
+- **DPI awareness**: live-probe risk. If `view displayBox` vs PowerShell coords disagree on scaled monitors, add DPI-aware call in PS helper.
+- **Effort estimate**: 1-2 focused sessions.
+
+Test seam refinement (revised):
+- `screenshotCaptureOverride` returns a **Dictionary** (not just bytes): `{ok:true, pngBytes, width, height}` on success / `{ok:false, status, error, message}` on failure.
+- `scriptedWindowsForScreenshot` **separate** from `scriptedWindowSnapshots` so /wait + /screenshot tests don't interfere.
+- Fake PNG bytes in tests MUST include null + high-byte values (lock binary safety from test #1).
+
+Sharp edges (with Oracle's mitigations):
+| Edge | Mitigation |
+|---|---|
+| HWND/window race | Resolve rect immediately before capture; v1 accepts "visible pixels at that rectangle" |
+| Occlusion/minimized windows | `CopyFromScreen` is composited desktop; document limitation; PrintWindow/DWM as later escalation |
+| PowerShell injection | Resolve appClass/titleContains in VW; pass only validated mode/INT coords to subprocess |
+| Binary stdout drain | Temp PNG file fallback if VW subprocess API can't handle concurrent binary drain |
+| DPI scaling mismatch | Probe live; add DPI-aware call in PS helper if VW displayBox vs PS coords disagree |
+
+### Subprocess API + binary stream probe RESULTS (session-11)
+
+Two probes (`_probe-f3-subprocess.st` + `_probe-f3-winprocess.st`) confirmed Oracle's Path B is fully feasible in this image:
+
+| Probe | Finding |
+|---|---|
+| Class hunt across all 312 namespaces for subprocess candidates | **`OS.WinProcess`** (Windows-specific, 24 inst + 5 class-side) + **`OS.ExternalProcess`** (cross-platform parent, 43 inst + 20 class-side) BOTH PRESENT |
+| `OS` namespace enumeration | 117 classes including `Stdin`/`Stdout`/`Stderr`, `StandardIOStream`, `StandardIOSubsystem`, `ExternalReadStream`/`ExternalWriteStream`/`BufferedExternalStream`, `PCPipeAccessor`, `UnixProcess` (Unix peer), `OSHandle`, full `SocketAccessor` family |
+| `OS.ExternalProcess` key API | `execute:arguments:do:errorStreamDo:` (one-shot with stream blocks), `createInOutErrorPipes`, `inputPipe`/`outputPipe`/`errorPipe`, `readStream`/`writeStream`, `fork:arguments:`/`startProcess:arguments:`, `wait`/`isActive`/`isExited`/`exitStatus`, `kill`/`kill:`/`exit`, `defaultClass` factory, **`lineEndTransparent`** (binary-safe stdout knob), `encoding:` |
+| `OS.WinProcess` adds | `quoteArgument:` (security knob for safe argument escaping), `useOEMEncoding`/`oemEncoding`, `executeCommand:`/`executeSingleCommand:`, `getCommandLineInterpreter`, Windows-specific reaping |
+| ByteArray WriteStream binary sanity | `WriteStream on: (ByteArray new: 16)` → 8 `nextPut:` of PNG magic bytes 0x89/0x50/0x4E/0x47/0x0D/0x0A/0x1A/0x0A → `ws contents class = ByteArray`, contents = `#[137 80 78 71 13 10 26 10]` — **PERFECTLY BINARY-SAFE** |
+| WriteStream subclasses | 7 total including **`DeflateStream`** and **`GZipWriteStream`** (Path C fallback if ever needed) |
+
+### Bridge architecture findings (from VWBridge.st reads)
+
+| Aspect | Finding |
+|---|---|
+| `httpResponse:type:body:` at L1837 | Uses `out := Core.WriteStream on: Core.String new` (STRING not ByteArray) + `out nextPutAll: bodyString`. **Text-only, would mangle binary.** Need sibling `httpBinaryResponse:type:body:` returning ByteArray. |
+| Routing layer at L460-543 | `dispatch:headers:body:` wraps `doDispatch:headers:body:` with Bug #5 Stage 2 re-entry guard. Add `/screenshot` route at L526 area (POST section): `path = '/screenshot' ifTrue: [^self handleScreenshotBody: bodyString]` |
+| Socket-write at L384/L402 | `[stream nextPutAll: response] on: err do: [:ex | nil]` — assumes String. For binary, need confirmed-binary socket-write path or build full response (header bytes + body bytes) as one ByteArray upstream |
+| `serve:` listener loop at L315-353 | `listenerLoop` forks per-connection process from `listener accept`. Each `serve:` runs on its own forked process — blocking is safe |
+| Existing OS/Subprocess refs | NONE in current bridge code. Path B will be the first OS-side integration. |
+
+### TDD scaffold LANDED (session-11)
+
+`src/vw-bridge/VWBridge-ScreenshotTest.st` written + filed-in via `'path' asFilename fileIn` wrapper. Verification confirms:
+- Class loaded: `VWBridgeScreenshotTest`, superclass `TestCase`, category `'VW-TestBridge-ScreenshotTests'`, **26 total selectors**
+- **10 RED test methods** (3 validation + 1 binary response + 1 capture success + 1 size cap + 2 window targeting + 1 timeout + 1 capture failure — covers all 8 Oracle steps + 2 validation sub-cases)
+- **16 helpers**: `setUp`, `tearDown` (defensive — checks `respondsTo: #clearScreenshotOverrides`), `ensureScreenshotImplemented` (uniform RED message), `screenshotResponseFor:`, `statusLineOf:`, `bodyOf:`, `bodyContains:in:`, `headerContains:in:`, `fakePngBytesIncludingNullsAndHighBytes` (includes 0x00 + 0xFF + 0x89 for binary safety lock), `fakeOversizedPngBytesOfSize:`, `fakeSuccessResultWithBytes:width:height:`, `fakeFailureResultStatus:error:message:`, `windowRectSnapshotAppClass:titleContains:origin:corner:`, `windowRectSnapshotAppClass:titleContains:id:`, `withScreenshotCaptureOverride:do:`, `withScriptedScreenshotWindows:do:`
+- Spot-check: `(VWBridgeScreenshotTest selector: #testScreenshotRejectsBadRequest) run` → **`1 run, 0 passed, 1 failed, 0 errors`** ← clean RED via `ensureScreenshotImplemented` (NOT doesNotUnderstand error)
+
+### Session-12 implementation roadmap (per Oracle's TDD order)
+
+Each step turns the matching test(s) GREEN.
+
+1. **Test seam ivars on VWBridge**: add `screenshotCaptureOverride` + `scriptedWindowsForScreenshot` to instance vars at L21, plus accessors + `clearScreenshotOverrides` clearing both. This alone moves `ensureScreenshotImplemented` past the "Missing" check (still RED until handler exists).
+2. **`parseAndValidateScreenshotRequest:`** + 400/415 error envelope helpers → tests #1, #2, #3 GREEN.
+3. **`httpBinaryResponse:type:body:`** returning ByteArray (header bytes + body bytes) + ensure `serve:` socket-write accepts ByteArray → test #4 GREEN (binary safety locked).
+4. **`handleScreenshotBody:`** core flow: validate → resolve window if window target → invoke override or production capture → emit response → test #5 GREEN.
+5. **`maxBytes` check after capture** → test #6 (413) GREEN.
+6. **`resolveWindowRectForScreenshot:`** with 404/409 paths → tests #7, #8 GREEN.
+7. **Map failure outcomes** (`status` field) to HTTP status codes → tests #9 (408), #10 (500) GREEN.
+8. **PowerShell helper script** (`screenshot-helper.ps1` or inline `-Command` string) using `[SystemInformation]::VirtualScreen` + `Graphics.FromImage($bm).CopyFromScreen(...)` + `Bitmap.Save(stream, ImageFormat.Png)` + `[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)`. Validated INT-only args, `quoteArgument:` for safety.
+9. **`captureScreenshotViaSubprocess:`** using `OS.ExternalProcess defaultClass new` → `lineEndTransparent` → `createInOutErrorPipes` → `startProcess:arguments:` → drain `outputPipe contents` → `wait` → check `exitStatus`. Or use `execute:arguments:do:errorStreamDo:` one-shot if ergonomics suit.
+10. **Add `/screenshot` route to dispatch** at L526 area.
+11. **Real-usage verification**: capture live PartySearch window via bridge, verify bytes decode as valid PNG (e.g., via PowerShell `[System.Drawing.Image]::FromStream($ms)` round-trip), visual inspection.
+12. **Bridge version bump v0.9.0 → v0.9.1** at 4 canonical sites + update `testHealthReturnsCurrentVersion`.
 
 ---
 
@@ -10,7 +127,7 @@
 
 Per Oracle F1 synthesis: ship **`POST /screenshot` returning raw `image/png` bytes** on success, JSON error envelope on failure. Full virtual screen by default; optional deterministic window targeting via `appClass` + `titleContains`. PNG only. **16 MiB encoded cap** with `413 screenshot-too-large` on exceed (no automatic downscaling). Sync.
 
-But F2 probe found **no PNG-encoder class exists in this image as-loaded.** The implementation path requires resolving how to get PNG bytes from a captured `Graphics.Image`. F3 needs deeper probe + Oracle consult before any code is written.
+**Status (session-11 EOD)**: Q1 fully resolved (Path A REFUTED); Oracle F3 picked **Path B** (PowerShell System.Drawing subprocess) with high confidence; subprocess + binary-stream APIs probed and confirmed viable (`OS.WinProcess` + `OS.ExternalProcess` + `lineEndTransparent` + `quoteArgument:` + ByteArray WriteStream binary-safe); bridge architecture mapped (need `httpBinaryResponse:` sibling); **TDD scaffold landed** (10 RED tests in image, all clean-RED via `ensureScreenshotImplemented`). Session-12 implementation roadmap below (Oracle's 12-step TDD order).
 
 ---
 
@@ -220,13 +337,13 @@ Before any code, F3 must answer:
 
 ### Q1 — How to get a PNG-encoded byte stream from a `Graphics.Image`?
 
-Three candidate paths, in order of cleanliness:
+**RESOLVED in session-11: Path A REFUTED.** See "Session-11 progress" section at top of doc for full evidence (6 probes). Choice now between Path B and Path C, pending Oracle F3 (`bg_3e72b537`).
 
-**Path A: Find a stock VW pundle that adds PNG-write support.** Per session-9 parcel discovery, `Kernel.Parcel` exists with 86 class-side selectors including `findParcelNamed:`, `parcelNames`, `parcels`. There are 103 stock `.pcl` files in `C:\visualworks931\parcels\` — one of them may be the image-IO encoder pundle (candidates: `Image*.pcl`, `Graphics*.pcl`, `BinaryIO.pcl`, `Compression-Zip.pcl`?). Probe `Parcel parcelNames` + `Parcel parcels` for matches. Load with `Kernel.Parcel ensureLoadedParcel:withVersion:`. **Lowest-risk path if available.**
+**Path A (DEAD): Stock VW pundle adds PNG-write support.** The only candidate filename match was `preview\64-bit\ImageWriter.pcl` — turned out to be the 64-bit VM-snapshot converter (`VirtualImage`/`McCartneyImage`), not pixel encoder. Image-wide hunt confirmed: no `ImageWriter`/`ImageEncoder`/`BitmapWriter`/`BMPWriter`/`TIFF`/`WebP` class exists; `ImageReader` hierarchy has 5 readers and zero writer peer; `Graphics.PNGImageReader` has zero write methods; `LibJPEG-turbo` (loaded) is decode-only.
 
-**Path B: Use OS-level capture via subprocess.** Bridge forks a PowerShell or `.NET` process that uses `System.Drawing.Graphics.CopyFromScreen` + `Bitmap.Save(stream, ImageFormat.Png)`. Returns bytes via stdout to bridge serve-process. **High portability**; bypasses VW graphics entirely; sidesteps the missing PNG writer. **Downside:** subprocess overhead per capture, dependency on PowerShell/.NET being on the host (it is).
+**Path B (LIVE candidate): OS-level capture via subprocess.** Bridge forks a PowerShell or `.NET` process that uses `System.Drawing.Graphics.CopyFromScreen` + `Bitmap.Save(stream, ImageFormat.Png)`. Returns bytes via stdout to bridge serve-process. **High portability**; bypasses VW graphics entirely; sidesteps the missing PNG writer. Also collapses Q2 (no separate VW-side capture primitive needed). **Downside:** subprocess overhead per capture (~50-200 ms), dependency on PowerShell + .NET on the host (both present).
 
-**Path C: Hand-roll PNG encoder in Smalltalk.** PNG is well-documented: header + IHDR chunk + IDAT (zlib-compressed pixel data) + IEND. Zlib compression available via `Graphics.PNGInflateStream`'s deflate counterpart (probe for `DeflateStream` / `ZipDeflateStream`). **Highest effort**; brittle; deferred unless A and B both fail.
+**Path C (LIVE candidate, expensive): Hand-roll PNG encoder in Smalltalk.** PNG = magic + IHDR chunk + IDAT (zlib-compressed scanlines) + IEND, with CRC32 on each chunk. `Compression-ZLib` is LOADED (raw zlib for IDAT compression layer). `HashesBase` is loaded (likely CRC32). `Xtreams-Compression` also loaded as alternative. Capture-side still needs solving — `Graphics.Image` has no `Screen.capture` primitive in this image, so Path C either needs OS-side capture (becomes "Path B-capture + Path C-encode" hybrid) or has to invent capture in Smalltalk (likely impossible without primitives we don't have). **Highest pure-Smalltalk effort**; brittle; deferred unless Oracle disagrees.
 
 ### Q2 — How to capture the screen / a window into a `Graphics.Image`?
 
@@ -248,21 +365,32 @@ Session observation: Portfolio window opened at bounds `805@281 corner: 1758@112
 
 ---
 
-## F3 next-session checklist
+## F3 progress checklist
 
-Recommended sequence:
+| Step | Status | Notes |
+|---|---|---|
+| 1. Probe `Kernel.Parcel parcelNames` + `parcels` | ✓ DONE session-11 | LOADED=KNOWN=112; `parcelNames` is LOADED-only |
+| 2. Filesystem scan `C:\visualworks931\` recursive `*.pcl` | ✓ DONE session-11 | 425+ parcels; only candidate: `preview\64-bit\ImageWriter.pcl` (65 KB) |
+| 3. Test-load `ImageWriter` → verify Path A | ✓ DONE session-11 | REFUTED — VM converter not pixel encoder; image-wide hunt confirmed zero pixel encoders anywhere |
+| 4. Oracle F3 consult with probe results | ✓ DONE session-11 | `bg_3e72b537`, 2m 16s. Returned high-confidence Path B verdict + 7-section plan + sharp-edge analysis |
+| 5. Pick Path B vs Path C | ✓ DONE session-11 | **Path B** (Oracle: Path C still needs OS capture → strictly worse) |
+| 6. Subprocess API probe (Path B) | ✓ DONE session-11 | `OS.WinProcess` + `OS.ExternalProcess` viable; `lineEndTransparent` + `quoteArgument:` + `createInOutErrorPipes` + `execute:arguments:do:errorStreamDo:` all present |
+| 7. Binary WriteStream sanity | ✓ DONE session-11 | `WriteStream on: (ByteArray new)` round-trips PNG-magic byte-for-byte; `DeflateStream`/`GZipWriteStream` loaded as Path C reserve |
+| 8. Bridge architecture read | ✓ DONE session-11 | Dispatch at L460-543 (add `/screenshot` at L526), `httpResponse:` at L1837 text-only (need binary sibling), `serve:` socket-write at L384/402 |
+| 9. TDD scaffold — 10 RED tests via test seams | ✓ DONE session-11 | `VWBridge-ScreenshotTest.st` (10 tests + 16 helpers) filed-in via `'path' asFilename fileIn` wrapper; class verified, spot-test ran `1 run, 0 passed, 1 failed, 0 errors` (clean RED via `ensureScreenshotImplemented`) |
+| 10. Add `screenshotCaptureOverride` + `scriptedWindowsForScreenshot` ivars + `clearScreenshotOverrides` to VWBridge | PENDING session-12 | Moves tests past the "Missing" check |
+| 11. Implement `parseAndValidateScreenshotRequest:` + 400/415 envelope | PENDING session-12 | Turns validation tests GREEN (#1, #2, #3) |
+| 12. Implement `httpBinaryResponse:type:body:` (returns ByteArray) + binary-safe socket-write | PENDING session-12 | Turns binary-safety test GREEN (#4) |
+| 13. Implement `handleScreenshotBody:` core flow + override invocation | PENDING session-12 | Turns capture-success test GREEN (#5) |
+| 14. Implement maxBytes check (413) | PENDING session-12 | Turns size-cap test GREEN (#6) |
+| 15. Implement `resolveWindowRectForScreenshot:` (404/409) | PENDING session-12 | Turns window-targeting tests GREEN (#7, #8) |
+| 16. Map failure outcomes (408/500) | PENDING session-12 | Turns failure tests GREEN (#9, #10) |
+| 17. PowerShell helper script + `captureScreenshotViaSubprocess:` (production capture) | PENDING session-12 | Enables real-usage |
+| 18. Add `/screenshot` route to dispatch | PENDING session-12 | Wires endpoint into bridge router |
+| 19. Real-usage verification — capture live PartySearch window via bridge | PENDING session-12 | Quality gate per `ROADMAP-QUALITY-FIRST.md` |
+| 20. Bridge version bump v0.9.0 → v0.9.1 at 4 canonical sites + test assertion | PENDING session-12 | Standard release procedure |
 
-1. **Probe `Kernel.Parcel parcelNames`** — list all 103+ stock parcels, look for image-write candidates. ~10 min.
-2. **Probe `C:\visualworks931\parcels\*.pcl`** filesystem-side for names suggesting image-write codecs. Cross-reference with #1. ~5 min.
-3. **If parcel found** → `Kernel.Parcel ensureLoadedParcel: 'CandidateName' withVersion: nil`, re-probe for PNG writer class. **Path A confirmed if it adds `PNGImageWriter` or similar.**
-4. **If Path A fails** → Spike Path B: PowerShell `Add-Type -AssemblyName System.Drawing` + `[System.Drawing.Graphics]::FromHwnd(hwnd)` + `CopyFromScreen` + `bitmap.Save` to memory stream. Measure subprocess overhead vs UI-process onUIDo: capture path.
-5. **Oracle consult F3** with probe results in hand — design the actual capture + encode pipeline given the path chosen.
-6. **TDD scaffold** — write 8 tests RED (using the 2 test seams) before any production code.
-7. **Implement handler** in `VWBridge.st` per Oracle's API shape spec.
-8. **Implement capture/encode** per chosen path.
-9. **Real-usage verification** — capture the live PartySearch window via bridge; verify bytes decode as valid PNG; visual inspection of the rendered image.
-
-Estimated effort given resolved encoder question: ~6-10 hours including TDD + real-usage verification + bridge version bump to v0.9.1 + commit + docs.
+Estimated session-12 effort: 4-8 hours for steps 10-20 (Oracle's 1-2 session estimate for full Path B implementation, but session-11's scaffolding work compresses session-12 to roughly the lower bound).
 
 ---
 
@@ -275,21 +403,25 @@ Estimated effort given resolved encoder question: ~6-10 hours including TDD + re
 
 ---
 
-## What was NOT done in session-10
+## What was NOT done in session-10 / session-11 status
 
-- Probe for PNG-writer pundles (Q1 Path A first cut).
-- Probe for VW FFI infrastructure (`ExternalProcedure`, `dllcc` namespace status).
-- Probe for `OS.Subprocess` / equivalent for Path B feasibility.
-- Probe for `Screen allScreens` to map the multi-monitor layout.
-- Any code in `VWBridge.st`.
-
-All of these are F3 next-session items.
+| Item | Session-10 | Session-11 |
+|---|---|---|
+| Probe for PNG-writer pundles (Q1 Path A first cut) | NOT DONE | ✓ DONE — REFUTED (no PNG writer anywhere) |
+| Filesystem cross-reference of stock VW parcels | NOT DONE | ✓ DONE — 425+ .pcl scanned, 1 candidate found+refuted |
+| Probe for VW FFI infrastructure (`ExternalProcedure`, `dllcc`) | NOT DONE | NOT DONE — defer until Oracle picks path (only matters for Path B variant) |
+| Probe for `OS.Subprocess` / equivalent for Path B feasibility | NOT DONE | NOT DONE — defer until Oracle picks Path B |
+| Probe for `Screen allScreens` to map multi-monitor layout | NOT DONE | NOT DONE — defer until path chosen (relevant to both B and C) |
+| Probe `Compression-ZLib` writer API + CRC32 source | NOT DONE | NOT DONE — defer until Oracle picks Path C |
+| Any code in `VWBridge.st` | NOT DONE | NOT DONE — implementation BLOCKED per Oracle-dependent task rule |
 
 ---
 
 ## Resume hooks
 
-- **Next-session anchor:** this file + [`knowledge/vw-image-api-contract.md`](../knowledge/vw-image-api-contract.md) + the Oracle synthesis above.
-- **First action:** probe `Kernel.Parcel parcelNames` + `C:\visualworks931\parcels\*.pcl` for image-write codec candidates (Q1 Path A first cut).
-- **Decision point:** after the parcel probe, pick Path A vs Path B vs both — that determines F3 effort estimate and timeline.
-- **Quality bar:** same as Phase B's quality gate per [`ROADMAP-QUALITY-FIRST.md`](./ROADMAP-QUALITY-FIRST.md) — "screenshot quality matches what a developer would manually capture; no truncation; readable file size; no broken images."
+- **Next-session anchor:** this file + [`knowledge/vw-image-api-contract.md`](../knowledge/vw-image-api-contract.md) + [`knowledge/HANDOFF-2026-06-20-session11.md`](../knowledge/HANDOFF-2026-06-20-session11.md) (to be written at session-11 EOD).
+- **First action:** read Oracle F3 response (when notification arrives — `bg_3e72b537`). Surface path recommendation to user. Then either:
+  - Path B chosen → probe `OS.Subprocess`-family selectors + PowerShell System.Drawing spike → TDD scaffold → handler
+  - Path C chosen → probe `Compression-ZLib` writer API + CRC32 + binary `WriteStream` + capture-side question → TDD scaffold → handler
+- **Decision point:** Path B vs Path C — Oracle has the data, you have the call. Don't pick before Oracle returns.
+- **Quality bar:** same as Phase B's quality gate per [`ROADMAP-QUALITY-FIRST.md`](./ROADMAP-QUALITY-FIRST.md) — "screenshot quality matches what a developer would manually capture; no truncation; readable file size; no broken images." Per-screenshot byte-correctness verification: bytes round-trip through PNG decoder cleanly + visual inspection.
