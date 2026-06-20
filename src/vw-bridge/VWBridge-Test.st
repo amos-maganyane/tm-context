@@ -95,8 +95,8 @@ testHealthReturnsCurrentVersion
 	body := self bodyOf: (self dispatch: 'GET /health HTTP/1.1').
 	self assert: (body indexOfSubCollection: '"status":"ok"') > 0
 		description: 'Health body missing status=ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"version":"0.8.11"') > 0
-		description: 'Health body missing version=0.8.11. Body: ' , body!
+	self assert: (body indexOfSubCollection: '"version":"0.8.12"') > 0
+		description: 'Health body missing version=0.8.12. Body: ' , body!
 
 testHealthDoesNotRequireAuth
 	"Health is intentionally auth-exempt for liveness probes."
@@ -139,3 +139,42 @@ testEvalReturnsErrorForBadCode
 	self assert: ((body indexOfSubCollection: 'eval_failed') > 0
 		or: [(body indexOfSubCollection: '"ok":false') > 0])
 		description: 'Bad eval should surface a structured error. Body: ' , body! !
+
+!VWBridgeTest methodsFor: 'tests - bug 2'!
+
+testBug2DialogConfirmYesReturnsTrue
+	"v0.8.12 fix: bridge-dismissed Dialog confirm: Yes must return true.
+	 Was nil pre-v0.8.12 (Bug #2 Symptom A). Forks Dialog confirm: at user
+	 priority, lets modal open, calls handler directly (avoids Bug #5
+	 recursive dispatch), polls for fork completion, asserts captured return."
+	| proc deadline ret |
+	Root.Smalltalk at: #TEST_BUG2_YES_RET put: 'pending'.
+	proc := [Root.Smalltalk at: #TEST_BUG2_YES_RET
+		put: (Dialog confirm: 'TEST Bug#2 Yes - bridge dismiss')]
+		forkAt: Processor userSchedulingPriority.
+	(Delay forMilliseconds: 500) wait.
+	bridge doRespondDialog: 'Yes'.
+	deadline := Time millisecondClockValue + 5000.
+	[(Root.Smalltalk at: #TEST_BUG2_YES_RET) = 'pending'
+		and: [Time millisecondClockValue < deadline]]
+		whileTrue: [(Delay forMilliseconds: 100) wait].
+	ret := Root.Smalltalk at: #TEST_BUG2_YES_RET.
+	self assert: ret == true description: 'Expected true, got: ' , ret printString!
+
+testBug2DialogConfirmNoReturnsFalse
+	"v0.8.12 fix: bridge-dismissed Dialog confirm: No must return false.
+	 Both Yes and No bridge dismissals return nil from the framework
+	 (Q3 in session-7 pre-probes). Override synthesizes accept/cancel."
+	| proc deadline ret |
+	Root.Smalltalk at: #TEST_BUG2_NO_RET put: 'pending'.
+	proc := [Root.Smalltalk at: #TEST_BUG2_NO_RET
+		put: (Dialog confirm: 'TEST Bug#2 No - bridge dismiss')]
+		forkAt: Processor userSchedulingPriority.
+	(Delay forMilliseconds: 500) wait.
+	bridge doRespondDialog: 'No'.
+	deadline := Time millisecondClockValue + 5000.
+	[(Root.Smalltalk at: #TEST_BUG2_NO_RET) = 'pending'
+		and: [Time millisecondClockValue < deadline]]
+		whileTrue: [(Delay forMilliseconds: 100) wait].
+	ret := Root.Smalltalk at: #TEST_BUG2_NO_RET.
+	self assert: ret == false description: 'Expected false, got: ' , ret printString! !

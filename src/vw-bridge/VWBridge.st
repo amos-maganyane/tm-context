@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.8.11 -- single-file consolidation of the 7-patch chain ==="
+"=== VW Widget Bridge v0.8.12 -- single-file consolidation of the 7-patch chain ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan."
@@ -287,7 +287,7 @@ authError: requestLine headers: headers
 !VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
-	"Main dispatcher (v0.8.11). Wraps doDispatch:headers:body: with a
+	"Main dispatcher (v0.8.12). Wraps doDispatch:headers:body: with a
 	 Bug #5 Stage 2 per-process re-entry guard - if /eval bodies
 	 synchronously call back into dispatch: on the same process, we
 	 detect the recursion via per-process depth counter and fail fast
@@ -317,7 +317,7 @@ dispatch: requestLine headers: headers body: bodyString
 		ensure: [self class decrementDispatchDepthFor: proc]!
 
 doDispatch: requestLine headers: headers body: bodyString
-	"Actual dispatch logic (v0.8.11). Called by dispatch:headers:body:
+	"Actual dispatch logic (v0.8.12). Called by dispatch:headers:body:
 	 after the Bug #5 Stage 2 re-entry guard passes."
 	| parts method path queryString authResp |
 	authResp := self authError: requestLine headers: headers.
@@ -336,7 +336,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.8.11"}'].
+				body: '{"status":"ok","version":"0.8.12"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
@@ -1694,6 +1694,44 @@ httpResponse: code type: contentType body: bodyString
 	out nextPutAll: crlf.
 	out nextPutAll: bodyString.
 	^out contents! !
+
+"v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
+Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
+
+!SimpleDialog methodsFor: 'mas-bug2-fix'!
+
+choose: aLabel labels: labels values: values default: defaultValue for: aWindow
+	"v0.8.12 Bug #2 Symptom A fix: synthesize boolean return from accept/cancel
+	 ValueHolders when the framework's force-close yields nil. Conservative -
+	 only fires for confirm-shaped values (Array with: true with: false).
+	 All other nil results pass through unchanged.
+
+	 WHY: closeAndUnschedule + purgeDeadWindows (v0.8.11) wakes the wedged
+	 modal loop cleanly, but the framework hardcodes a nil return on
+	 force-close exit regardless of accept/cancel state. Pre-probe (session-7)
+	 confirmed both ValueHolders retain their bridge-set value through the
+	 unwind. See knowledge/vw-bridge-known-issues.md Bug #2 for the full
+	 investigation.
+
+	 equalize: false matches the conventional default. The original frame 22
+	 method is a 1-message delegator; the equalize: argument is a bytecode
+	 pushSpecial (true/false/nil) and could not be decoded with stripped
+	 sources. If wrong, cosmetic button-width difference only."
+	| result confirmShaped |
+	result := self
+		choose: aLabel
+		labels: labels
+		values: values
+		default: defaultValue
+		equalize: false
+		for: aWindow.
+	confirmShaped := (values size = 2)
+		and: [(values at: 1) == true
+			and: [(values at: 2) == false]].
+	(result == nil and: [confirmShaped]) ifTrue: [
+		self accept value ifTrue: [^true].
+		self cancel value ifTrue: [^false]].
+	^result! !
 
 "=== Auto-start the bridge on file-in and write .token for agent pickup ==="
 | f tokenPath |
