@@ -7,11 +7,11 @@
  ============================================================================
  PREFER A VW WORKSPACE for green results:
 
-   "WORKSPACE - GREEN"
+   [WORKSPACE - GREEN]
    VWBridgeTest suite run printString
    ((VWBridgeTest selector: #testHealthReturnsCurrentVersion) run) printString
 
-   ""HTTP /eval - ALL RED (each test returns 400 recursive_dispatch, v0.8.8+)""
+   [HTTP /eval - ALL RED (each test returns 400 recursive_dispatch, v0.8.8+)]
    POST http://127.0.0.1:9876/eval  with body  'VWBridgeTest suite run'
    --> tests fail clean, listener stays alive (was image-killing pre-v0.8.8)
 
