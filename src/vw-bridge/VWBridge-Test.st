@@ -241,3 +241,67 @@ testLogJsonLineWellFormed
 		description: 'No JSON object header found in log'.
 	self assert: (contents lastIndexOf: $}) > 0
 		description: 'Log file missing closing brace'! !
+
+!VWBridgeTest methodsFor: 'tests - purge wedged'!
+
+testPurgeWedgedDialogProcessesReturnsNonNegativeInteger
+	"v0.8.11 purgeWedgedDialogProcesses contract: returns Integer >= 0.
+	 Safe to call on an image with no wedged processes (returns 0).
+	 Defensive design swallows all errors and returns 0 on Process class
+	 missing, GC'd procs, partially-walked contexts, etc."
+	| count |
+	count := bridge purgeWedgedDialogProcesses.
+	self assert: (count isKindOf: Core.Integer)
+		description: 'purgeWedgedDialogProcesses should return Integer, got: ' , count class name asString.
+	self assert: count >= 0
+		description: 'purgeWedgedDialogProcesses should return non-negative count, got: ' , count printString!
+
+testPurgeWedgedDialogProcessesIdempotentOnCleanImage
+	"v0.8.11: repeated calls converge to 0. First call may return >0 if
+	 pre-existing wedges exist from earlier session activity; second call
+	 must be 0 because the first call already unwedged everything purgeable."
+	| firstCount secondCount |
+	firstCount := bridge purgeWedgedDialogProcesses.
+	"brief settle in case the first purge spawned any cleanup forks"
+	(Delay forMilliseconds: 100) wait.
+	secondCount := bridge purgeWedgedDialogProcesses.
+	self assert: secondCount = 0
+		description: 'idempotency violated: first=' , firstCount printString ,
+			' second=' , secondCount printString , ' (expected second=0)'!
+
+testPurgeWedgedDialogProcessesUnwedgesActiveModalFork
+	"Targeted v0.8.11 behavior test: forks Dialog confirm:, force-closes
+	 its modal window to wedge the modal loop (Semaphore stays unsignaled
+	 because closeAndUnschedule doesn't push a Destroy event), then directly
+	 invokes purge - NOT through doRespondDialog: - to isolate purge's
+	 effect. Asserts purge counts >= 1 AND that the fork unwedges cleanly
+	 (Dialog confirm: returns true via the v0.8.12 SimpleDialog override
+	 since we set accept value: true before close)."
+	| proc deadline globalKey count modalCtrl ret |
+	globalKey := #TEST_PURGE_TARGET_RET.
+	Root.Smalltalk at: globalKey put: 'pending'.
+	proc := [Root.Smalltalk at: globalKey
+		put: (Dialog confirm: 'TEST purgeWedgedDialogProcesses target')]
+		forkAt: Processor userSchedulingPriority.
+	(Delay forMilliseconds: 500) wait.
+	"Locate the modal directly (avoid bridge dispatch:) and force-close it.
+	 closeAndUnschedule leaves the fork wedged on a Semaphore wait."
+	modalCtrl := ScheduledControllers scheduledControllers detect: [:c |
+		[c model isKindOf: SimpleDialog] on: Error do: [:e | false]
+	] ifNone: [nil].
+	self assert: modalCtrl notNil description: 'modal did not open within 500ms'.
+	modalCtrl model accept value: true.
+	modalCtrl closeAndUnschedule.
+	"Directly invoke purge - must report at least 1 (our fork)."
+	count := bridge purgeWedgedDialogProcesses.
+	self assert: count >= 1
+		description: 'purge should unwedge >= 1 process, got: ' , count printString.
+	"Fork should now unwind. Dialog confirm: returns true via the v0.8.12
+	 SimpleDialog>>choose:labels:values:default:for: override (accept=true)."
+	deadline := Time millisecondClockValue + 5000.
+	[(Root.Smalltalk at: globalKey) = 'pending'
+		and: [Time millisecondClockValue < deadline]]
+		whileTrue: [(Delay forMilliseconds: 100) wait].
+	ret := Root.Smalltalk at: globalKey.
+	self assert: ret == true
+		description: 'fork did not unwedge to true; result: ' , ret printString! !
