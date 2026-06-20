@@ -80,30 +80,36 @@ ScheduledControllers scheduledControllers select: [:c | c model class == SimpleD
 ### ❌ Accumulating /click wedges then "trying to recover"
 **Eventually you break VW input dispatch.** This session ended with `activeControllerProcess: nil`, multiple zombie processes, and 3 `UnhandledException` instances — VW input became unresponsive. Recovery options short of image restart were exhausted.
 
-**Fix:** when you notice things are getting weird (more than 1-2 wedged jobs, zombie processes appearing), **restart the bridge BEFORE the wedges compound into something irrecoverable**. Re-file all 7 `.st` files in order.
+**Fix:** when you notice things are getting weird (more than 1-2 wedged jobs, zombie processes appearing), **restart the bridge BEFORE the wedges compound into something irrecoverable**. Re-file `src/vw-bridge/VWBridge.st` from a workspace.
+
+### ⚠️ Running SUnit tests (or anything that calls `bridge dispatch:`) via `POST /eval`
+**Returns 400 cleanly in v0.8.8+ — but tests all fail red.** `/eval` runs on the bridge's serve process. Calling `VWBridge singleton dispatch: ... headers: ... body: ...` from inside that evaluation re-enters the dispatcher on the same process. **Pre-v0.8.8 this wedged the listener and propagated to UI dispatch (full `vwnt.exe` restart required).** v0.8.8 added two layers of containment:
+
+- **Stage 1**: `handleEvalBody:` rejects bodies textually containing both `'VWBridge'` and `'dispatch'` → `400 recursive_dispatch_forbidden` pre-compile (~4 ms).
+- **Stage 2**: `dispatch:headers:body:` runs a per-process re-entry counter. Bodies that evade Stage 1 (constructed selectors, `perform:` with split strings) reach the dispatcher, get `depth = 2`, and return `400 recursive_dispatch` (~16 ms).
+
+Net effect in v0.8.8+: the listener stays alive and the foot-gun fails fast — but every test going through this path returns 400, so the whole SUnit run still fails red. See [Bug #5 in `vw-bridge-known-issues.md`](./vw-bridge-known-issues.md#bug-5-recursive-bridge-dispatch-from-inside-eval-wedges-the-listener-hard).
+
+**Fix for green tests:** run SUnit from a VW workspace (`VWBridgeTest suite run printString`) — the workspace's foreground process is not a per-connection serve process, so the per-process counter starts at 0 and the guard is transparent. Alternatively refactor tests to call handler methods directly (`VWBridge singleton handleWindows`, not `dispatch:`).
 
 ## Bridge restart procedure
 
-In a VW workspace (one chunk, "Do It"):
+Single-file install since v0.8.5 (the 7-file phase chain was consolidated and archived — do NOT use the old chain; see [`src/vw-bridge/archive/README.md`](../src/vw-bridge/archive/README.md)). In a VW workspace (one chunk, "Do It"):
 
 ```smalltalk
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseA.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB1.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB2.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB3.st' asFilename fileIn.
-'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge-phaseB4.st' asFilename fileIn
+'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\VWBridge.st' asFilename fileIn
 ```
 
-The last file in the chain writes the new token to `.token` automatically. Pick it up via:
+The auto-start block at the end of the file does `VWBridge stop. VWBridge start.` then writes the fresh token to `.token`. Pick it up via:
 
 ```powershell
-$tok = (Get-Content C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\.token).Trim()
+$tok = (Get-Content -LiteralPath C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\.token).Trim()
 $h = @{"Authorization" = "Bearer $tok"}
 ```
 
-Note: bridge restart does NOT reset `Dialog useNativeDialogs:` (that's set on the `Dialog` class which lives in the image, not in the bridge). You may need to re-toggle if the VW image itself was restarted.
+> **Install path note (vw 9.3.1, this image):** the Launcher → File Browser → File In menu has chunk-parser quirks that fail on these bridge files. Workspace `asFilename fileIn.` is the only proven mechanism. See [`HANDOFF-2026-06-19.md`](./HANDOFF-2026-06-19.md) "file-in debugging detour" for the bisection that proved this.
+
+If a full `vwnt.exe` restart was needed for any reason (Bug #5 territory pre-v0.8.8; other accumulated-state issues — zombie /click jobs, hidden modals, exhausted UI dispatch — can still force one): you'll also need `Dialog useNativeDialogs: false` re-set, since it doesn't persist across `vwnt.exe` restarts (it DOES persist across mere bridge re-file-ins).
 
 ## When things go really wrong
 

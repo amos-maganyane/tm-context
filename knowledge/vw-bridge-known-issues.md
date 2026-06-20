@@ -62,6 +62,28 @@ spec class == RadioButtonSpec
 
 Then callers can `/click` any radio cleanly and the shared ValueHolder gets the correct symbol.
 
+### Status: FIXED in v0.8.7 (2026-06-19 session-3)
+
+`VWBridge>>doClick:` now probes `w spec` and branches on `isKindOf: RadioButtonSpec`:
+
+```smalltalk
+spec := [w spec] on: err do: [:ex | nil].
+radioCls := self globalNamed: #RadioButtonSpec.
+(spec ~~ nil and: [radioCls ~~ nil and: [spec isKindOf: radioCls]])
+  ifTrue:  [clickValue := [spec select] on: err do: [:ex | true].
+            method := 'model_value_spec_select']
+  ifFalse: [clickValue := true.
+            method := 'model_value_true'].
+```
+
+Response shape extended (backwards-compatible — fields ADDED, none removed):
+- `method`: now either `model_value_true` (non-radio, unchanged) or `model_value_spec_select` (radio, new)
+- `newValue`: the value actually written to `model value:` (new field, helps debugging)
+
+Verified live in storedev64 v0.8.7 across all 7 PartySearchView search-criteria radios — each click sets `searchCriteriaType` to the correct Symbol (`#id`, `#surname`, `#groupScheme`, `#mmiPartyReferenceNumber`, `#cdiNumber`, `#imcNr`, `#contractNumber`). Backwards-compat confirmed: `/click findID` (ActionButtonSpec) still uses `model_value_true` and fires the action normally.
+
+Bonus implication: the `searchCriteriaType` value verified ON ROUND-TRIP (`/eval` probe of the model immediately after the `/click` returns) shows the bridge's `/click` is now SAFE to use for radios in any other MAS view with similarly shared ValueHolders. The Bug #1 workaround in `vw-party-search.md` is no longer required for the Bug-#1-affected aspect of radio dispatch in v0.8.7+ — though `/eval` set is still preferred when you want to skip the action-handler side-effects entirely.
+
 ---
 
 ## Bug #2: `Dialog confirm:` dismissal via `closeAndUnschedule` doesn't propagate properly
@@ -308,3 +330,174 @@ So far observed:
 | `helpID` (Party Search) | `/click helpID` | `ExtendedSimpleDialog` (label `Help`) | yes |
 
 Other MAS buttons that open `ExtendedSimpleDialog`-class modals are likely affected the same way. Worth a sweep when fixing.
+
+### Status: FIXED in v0.8.6 (2026-06-19 session-3)
+
+Both `class == sdClass` sites in `VWBridge.st` swapped to `isKindOf: sdClass`:
+
+- `doListDialogs` (the `GET /dialogs` enumeration)
+- `doRespondDialog:` (the `POST /dialogs/respond` controller lookup)
+
+Version bumped `0.8.5` → `0.8.6`. Verified live in storedev64 by reloading the bridge via `/eval` (`'...VWBridge.st' asFilename fileIn`) and re-running the helpID reproduction:
+
+- `/click helpID` opens Help (`ExtendedSimpleDialog`)
+- `/dialogs` returns the Help dialog (was empty before fix)
+- `/dialogs/respond` dispatches `closeAndUnschedule` and the wedged `/click` returns
+
+Probe confirmed across-the-board:
+```
+isKindOf: SimpleDialog -> 1 (catches Help ExtendedSimpleDialog)
+class == SimpleDialog  -> 0 (old broken behavior)
+```
+
+### Bug #4b (sub-finding, lower priority): `describeDialog:` is `SimpleDialog`-shaped
+
+After the Bug #4 fix, `/dialogs` enumerates `ExtendedSimpleDialog` instances correctly, but `describeDialog:` returns a partial structure for them:
+
+```json
+{"message": null, "id": "540486", "buttons": []}
+```
+
+vs. the rich `{message, buttons:[...]}` shape it produces for a plain `SimpleDialog`. Cause: `describeDialog:` extracts the message via the widget aspected to `#displayMessageString` and buttons via the `ActionButtonSpec` entries in `model builder namedComponents` — both are `SimpleDialog`'s spec layout, NOT `ExtendedSimpleDialog`'s (whose `instVarNames` include `close accept cancel preBuildBlock postBuildBlock postOpenBlock escapeIsCancel parentView useParentColors` directly on the model, with its own builder layout).
+
+**Impact:** callers can detect that a dialog is up and they can dismiss it via `closeAndUnschedule` (which doesn't need button knowledge), but they can't make an informed Yes/No/OK choice based on the dialog's button labels. For Help-style modals this is fine (single Close path); for any subclassed confirm-style modal it would matter.
+
+**Proposed fix (Phase B+1):** add a class-aware branch in `describeDialog:` that probes the dialog's builder layout instead of assuming the `SimpleDialog` shape. Sketch:
+
+```smalltalk
+describeDialog: aDialog
+  ...
+  (aDialog isKindOf: ExtendedSimpleDialog)
+    ifTrue: [^self describeExtendedDialog: aDialog]
+    ifFalse: [^self describeSimpleDialog: aDialog]
+```
+
+Or, more general: probe `aDialog builder namedComponents` for any `ActionButtonSpec`-like widgets regardless of the parent dialog class, and probe for `displayMessageString` or a similar message aspect on the builder, falling back to `nil` gracefully.
+
+---
+
+## Bug #5: Recursive `bridge dispatch:` from inside `/eval` wedges the listener (HARD)
+
+**Discovered:** session 2026-06-19 session-3, while trying to run the new `VWBridgeTest` SUnit suite via `/eval`.
+
+**Severity:** HIGH. The bridge's TCP listener went fully unresponsive (port 9876 actively refused new connections); the image's UI dispatch also degraded to the point where manual clicks stopped registering, requiring a full image restart to recover.
+
+### Symptom
+
+`POST /eval` with a body that calls `bridge dispatch: ... headers: ... body: ...` synchronously on `VWBridge singleton` — even a trivial `dispatch: 'GET /health HTTP/1.1' headers: (Dictionary new) body: ''` — hangs (HTTP request times out). On a second or third call, the listener no longer accepts TCP connections at all (`Unable to connect` / `target machine actively refused it`).
+
+Triggers observed in this session:
+
+```smalltalk
+"trivial probe - timed out, then listener died"
+(VWBridge singleton dispatch: 'GET /health HTTP/1.1' headers: (Dictionary new) body: '') copyFrom: 1 to: 80
+
+"full SUnit suite - same outcome"
+VWBridgeTest suite run
+
+"single SUnit test - same outcome"
+((VWBridgeTest selector: #testHealthReturnsStatusOK) run) printString
+```
+
+After the wedge, even external HTTP probes (`curl http://127.0.0.1:9876/health` from PowerShell) return "Unable to connect". `Test-NetConnection 127.0.0.1 -Port 9876` confirms the port is no longer bound or the accept loop has died.
+
+### Root cause (hypothesis)
+
+`/eval` runs Smalltalk on the bridge's **serve process** — one of the per-connection forks spawned by the v0.8.2 non-blocking listener. When the evaluated Smalltalk synchronously calls `VWBridge singleton dispatch: ... headers: ... body: ...` AGAIN on the same singleton, it re-enters the dispatcher on the same process. Suspected mechanisms:
+
+1. **Shared mutable state on the singleton** (e.g. a per-request buffer, in-flight response stream, or a `currentRequest` slot) gets clobbered by the re-entrant call.
+2. **Per-connection fork bookkeeping** in the listener loop assumes one logical "dispatch" per forked process; nested dispatch confuses the lifecycle (e.g. the inner dispatch's response cleanup closes the outer dispatch's socket).
+3. **GUI message-pump cross-talk**: nested calls to `onUIDo:` (which uses `interruptWith:` on the UI process) may deadlock when the outer call is itself running on a process that's waiting for a UI interrupt to complete.
+
+The fact that subsequent TCP connects are also refused suggests the issue propagates to the listener's accept loop — either the listener process raised an unhandled exception and terminated, or its socket was closed by the in-flight serve process's cleanup path.
+
+### Reproduction (DO NOT RUN — confirmed image-killing)
+
+```powershell
+$tok = (Get-Content .\src\vw-bridge\.token).Trim()
+$h = @{"Authorization" = "Bearer $tok"}
+
+# Single recursive call is enough to wedge the listener:
+Invoke-RestMethod -Uri http://127.0.0.1:9876/eval -Method POST -Headers $h `
+    -Body "(VWBridge singleton dispatch: 'GET /health HTTP/1.1' headers: (Dictionary new) body: '') copyFrom: 1 to: 80" `
+    -ContentType 'text/plain' -TimeoutSec 10
+# Times out.
+
+# Subsequent calls confirm listener is dead:
+curl http://127.0.0.1:9876/health
+# -> Unable to connect.
+```
+
+### Workaround
+
+**Never call `VWBridge singleton dispatch:` from inside `/eval`.** Two safe alternatives for in-image testing:
+
+1. **Call handler methods directly, bypassing `dispatch:`:**
+   ```smalltalk
+   "instead of dispatching, hit the handler"
+   VWBridge singleton handleWindows.   "returns the HTTP response string"
+   VWBridge singleton handleDialogsQuery.
+   ```
+   The dispatcher's sole jobs are auth-checking and routing — both unnecessary in a same-image test where you already have the singleton.
+
+2. **Run SUnit tests from a VW workspace (NOT via `/eval`):**
+   ```smalltalk
+   "in a VW workspace - prints results to Transcript"
+   VWBridgeTest suite run printString
+   ```
+   This runs the suite on the workspace's foreground process, completely separate from the bridge's serve processes. No re-entrancy.
+
+The current [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) scaffold uses `dispatch:` because it was designed before this bug was known. Once Bug #5 is properly fixed (see below), `dispatch:`-based tests can run via either path; until then, use Workaround #2 OR refactor the tests to call handlers directly.
+
+### Recovery
+
+Once the listener is wedged, you cannot recover via the bridge itself (no `/eval` access). Two paths:
+
+1. **Re-file `VWBridge.st` from a VW workspace** — `VWBridge stop. VWBridge start.` in the auto-start block rebuilds the listener. May work if only the listener is dead but the image is otherwise responsive.
+2. **Kill `vwnt.exe` and relaunch the image** — required if the wedge has propagated to UI dispatch (this session: manual clicks stopped working, full restart was needed).
+
+### Proposed fix (Phase B+1, two stages)
+
+**Stage 1: contain the damage.** In the `/eval` handler, reject (or log+warn loudly about) bodies that reference `VWBridge` (or `singleton` / `dispatch:`). Cheap, brittle, but stops the foot-gun. Sketch:
+
+```smalltalk
+handleEvalBody: aSource
+  (aSource includesSubstring: 'VWBridge') ifTrue: [
+    ^self httpResponse: 400 type: 'application/json'
+      body: '{"error":"recursive_dispatch_forbidden","hint":"/eval cannot call back into VWBridge - see Bug #5"}'].
+  ...
+```
+
+**Stage 2: actually understand and fix the re-entrancy.** Instrument `dispatch:headers:body:` with a per-process counter (`Process activeProcess at: #vwbridgeDepth`) and either:
+
+- (a) detect re-entry and bypass auth/routing for the inner call (treat as a same-image call that's already been authorised), OR
+- (b) detect re-entry and explicitly fail-fast with a clear error so callers see the foot-gun immediately rather than after the wedge propagates.
+
+Combined with refactoring `VWBridgeTest` to call handler methods directly (workaround #1), this would eliminate the re-entrancy surface entirely.
+
+### Status: FIXED in v0.8.8 (2026-06-20 session-4)
+
+Two-stage fix in [`VWBridge.st`](../src/vw-bridge/VWBridge.st):
+
+**Stage 1 — substring filter in `handleEvalBody:`.** New helper `looksLikeRecursiveDispatch:` rejects bodies containing BOTH `'VWBridge'` AND `'dispatch'` substrings (case-sensitive). Returns `400 recursive_dispatch_forbidden` pre-compilation. Allows the documented workaround #1 (`VWBridge singleton handleWindows` — no `'dispatch'` substring) and any code that touches neither name. Brittle by design — the real defence is Stage 2.
+
+**Stage 2 — per-process re-entry counter in `dispatch:headers:body:`.** Class-side `incrementDispatchDepthFor:` / `decrementDispatchDepthFor:` (mutex-protected IdentityDictionary keyed by `Process`) track per-process dispatch depth. The original method becomes a guard wrapper around the renamed `doDispatch:headers:body:`. On `depth > 1` the guard returns `400 recursive_dispatch` with a `depth` field, balanced by an `ensure:` block on the happy path. Catches re-entry at runtime regardless of how the caller textually obscures the dispatch (constructed selectors, `perform:` with split strings, indirect handles, etc.).
+
+Two class instance variables added: `dispatchDepthByProcess` (IdentityDictionary) + `dispatchDepthMutex` (`Semaphore forMutualExclusion`), both lazy-initialized on first dispatch.
+
+**Verification (storedev64, 2026-06-20 session-4) — six probes, all green:**
+
+| Probe | Result | Time |
+|---|---|---|
+| `GET /health` (pre-check) | `{"status":"ok","version":"0.8.8"}` | — |
+| `GET /windows` (auth) | JSON array of 4 windows (GbxVisualLauncher / MAS / Workspace / VisualLauncher) | — |
+| **Stage 1**: literal `VWBridge singleton dispatch: 'GET /health HTTP/1.1' headers: (Dictionary new) body: ''` | **HTTP 400 `recursive_dispatch_forbidden`** + hint pointing to workaround #1 | **3.6 ms** |
+| **Stage 2**: constructed `Smalltalk at: ('V' , 'WBridge') asSymbol ... perform: ('disp' , 'atch:headers:body:') asSymbol ...` (evades Stage 1 substring filter) | **HTTP 200 wrapping inner 400 `"depth":2 recursive_dispatch`** | **16.3 ms** |
+| Legit `VWBridge singleton token` | HTTP 200 returns token literal | 2.7 ms |
+| Post-abuse `GET /health` | `{"status":"ok","version":"0.8.8"}` — **bridge alive** | — |
+
+**Response semantics for Stage 2:** the inner `dispatch:` returns the 400 HTTP response *string* (status line + headers + body). That string becomes the value of the evaluated /eval expression. The outer /eval handler wraps it via `safeJsonFor: printed` into `{"ok":true,"result":"<400 response>"}`. So callers see HTTP 200 with the rejection embedded — Stage 2 caught the foot-gun at runtime and the outer eval reports faithfully. No wedge.
+
+**Bug #5 contained, not fully eliminated.** The bridge no longer wedges on recursive dispatch attempts, but tests that depend on `dispatch:` from inside `/eval` will now FAIL CLEANLY (each request gets 400). Run [`VWBridgeTest`](../src/vw-bridge/VWBridge-Test.st) suite from a VW workspace for green results — the workspace's foreground process is not a per-connection serve process, so depth starts at 0 and the guard is transparent. Alternatively refactor the tests to call handler methods directly (workaround #1).
+
+Recovery scenario is gone: prior to v0.8.8 the wedge required a full `vwnt.exe` restart. In v0.8.8+ the same attack pattern returns 400 in ≤16 ms and the listener stays bound.
