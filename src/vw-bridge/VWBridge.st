@@ -36,7 +36,7 @@ Root.Smalltalk defineClass: #VWBridge
 	indexedType: #none
 	private: false
 	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots screenshotCaptureOverride scriptedWindowsForScreenshot '
-	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex '
+	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex vwBridgeHomeOverride '
 	imports: ''
 	category: 'VW-TestBridge'!
 
@@ -98,6 +98,49 @@ decrementDispatchDepthFor: aProcess
 		depth <= 1
 			ifTrue: [dispatchDepthByProcess removeKey: aProcess ifAbsent: [nil]]
 			ifFalse: [dispatchDepthByProcess at: aProcess put: depth - 1]]! !
+
+!VWBridge class methodsFor: 'config'!
+
+vwBridgeHome
+	"v0.9.2 Phase P P1: bridge install root directory. Resolution order:
+	 1. vwBridgeHomeOverride class ivar (test seam set via vwBridgeHomeOverride:)
+	 2. VW_BRIDGE_HOME env var via OS.CEnvironment userEnvironment
+	 3. Raise actionable error if neither is set
+	 Externalizes the previously-hardcoded install path so the bridge is
+	 deployable on any machine. Set VW_BRIDGE_HOME before launching vwnt.exe
+	 or in the running image via OS.CEnvironment userEnvironmentAt:put:."
+	vwBridgeHomeOverride isNil ifFalse: [^vwBridgeHomeOverride].
+	^OS.CEnvironment userEnvironment
+		at: 'VW_BRIDGE_HOME'
+		ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set. Set it to the bridge install directory before launching vwnt.exe, OR call VWBridge vwBridgeHomeOverride: aPath to inject at runtime.']!
+
+vwBridgeHomeOverride: aPath
+	"Test seam: set vwBridgeHome to aPath without mutating OS env. Pair
+	 with clearVwBridgeHomeOverride in tearDown for hermetic tests."
+	vwBridgeHomeOverride := aPath!
+
+clearVwBridgeHomeOverride
+	"Test seam: clear the override so vwBridgeHome falls back to env var.
+	 Defensive - never raises even if called when no override was set."
+	vwBridgeHomeOverride := nil!
+
+tokenFilePath
+	"v0.9.2 Phase P P1: canonical path to the .token file. Derived from
+	 vwBridgeHome. Replaces hardcoded literal in the auto-start chunk."
+	^self vwBridgeHome , '\.token'!
+
+logFilePath
+	"v0.9.2 Phase P P1: canonical path to vw-bridge.log. Derived from
+	 vwBridgeHome. The instance-side logFilePath delegates here so all
+	 paths flow through one source of truth."
+	^self vwBridgeHome , '\vw-bridge.log'!
+
+screenshotHelperScriptPath
+	"v0.9.2 Phase P P3: canonical path to scripts/screenshot-helper.ps1.
+	 Derived from vwBridgeHome. P3 relocated the helper from repo-root
+	 scripts/ to vwBridgeHome/scripts/ so a single env var pins the
+	 entire install."
+	^self vwBridgeHome , '\scripts\screenshot-helper.ps1'! !
 
 !VWBridge methodsFor: 'accessing'!
 
@@ -169,11 +212,10 @@ logError: aString
 	^self log: aString level: 'error'!
 
 logFilePath
-	"v0.8.13 bridge log file location. Lives next to .token. Hardcoded
-	 here for the same reason .token is hardcoded in the auto-start chunk:
-	 the bridge runs as a single-developer-laptop tool with one canonical
-	 install path. Externalize to env-var when production packaging happens."
-	^'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\vw-bridge.log'!
+	"v0.9.2 Phase P P1: instance-side log path. Delegates to class-side
+	 logFilePath which derives from vwBridgeHome (env var or override seam).
+	 Existing callsites (writeLogEntry:level:) call self logFilePath unchanged."
+	^self class logFilePath!
 
 writeLogEntry: aMessage level: aLevel
 	"v0.8.13 append one NDJSON line to logFilePath. Per-write open/close
@@ -2505,13 +2547,12 @@ windowMatchesScreenshotFilter: aWindowDict appClass: aClassName titleContains: a
 	^true!
 
 screenshotHelperScriptPath
-	"v0.9.1 Step 17: Hardcoded path to the PowerShell screenshot helper.
-	 Same convention as logFilePath (single-developer-laptop tool; one
-	 canonical install path; externalize to env-var when production
-	 packaging happens). Script source is scripts/screenshot-helper.ps1
-	 and uses System.Drawing for capture + Console OpenStandardOutput
-	 for binary PNG stdout."
-	^'C:\Users\ammaganyane\tm\tm-context\scripts\screenshot-helper.ps1'!
+	"v0.9.2 Phase P P3: instance-side helper script path. Delegates to
+	 class-side screenshotHelperScriptPath which derives from vwBridgeHome.
+	 P3 relocated the helper from repo-root scripts/ to vwBridgeHome/scripts/
+	 so the bridge install is self-contained. Caller in
+	 captureScreenshotViaSubprocess:rect: unchanged."
+	^self class screenshotHelperScriptPath!
 
 pngExtentFromBytes: aByteArray
 	"v0.9.1 Step 17: Parse PNG IHDR chunk to extract width and height.
@@ -2660,7 +2701,7 @@ choose: aLabel labels: labels values: values default: defaultValue for: aWindow
 | f tokenPath |
 VWBridge stop.
 VWBridge start.
-tokenPath := 'C:\Users\ammaganyane\tm\tm-context\src\vw-bridge\.token'.
+tokenPath := VWBridge tokenFilePath.
 f := [tokenPath asFilename writeStream] on: Core.Error do: [:ex | nil].
 f == nil
 	ifTrue: [Transcript cr; show: 'WARN: could not write .token file (', tokenPath, ') - copy token manually from Transcript'; cr]

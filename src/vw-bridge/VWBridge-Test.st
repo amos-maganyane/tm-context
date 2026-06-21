@@ -305,3 +305,62 @@ testPurgeWedgedDialogProcessesUnwedgesActiveModalFork
 	ret := Root.Smalltalk at: globalKey.
 	self assert: ret == true
 		description: 'fork did not unwedge to true; result: ' , ret printString! !
+
+!VWBridgeTest methodsFor: 'config'!
+
+testVwBridgeHomeOverrideTakesPriority
+	"v0.9.2 Phase P P1: vwBridgeHomeOverride: takes priority over the
+	 VW_BRIDGE_HOME env var. Cleared in ensure: block to keep the test
+	 hermetic from the next test."
+	[VWBridge vwBridgeHomeOverride: 'C:\test\override-wins'.
+	 self assert: VWBridge vwBridgeHome = 'C:\test\override-wins'
+		description: 'vwBridgeHome should return override when set']
+		ensure: [VWBridge clearVwBridgeHomeOverride]!
+
+testClearVwBridgeHomeOverrideRestoresEnvLookup
+	"v0.9.2 Phase P P1: clearVwBridgeHomeOverride drops the override and
+	 vwBridgeHome falls back to the env-var lookup path. Verified by
+	 setting a clearly-fake value, clearing it, and asserting that
+	 vwBridgeHome no longer returns the fake value (it returns the env
+	 var, OR raises if env var is unset - both pass the deny: check)."
+	| afterClear |
+	[VWBridge vwBridgeHomeOverride: 'C:\test\should-be-cleared'.
+	 self assert: VWBridge vwBridgeHome = 'C:\test\should-be-cleared'
+		description: 'sanity check: override should be active'.
+	 VWBridge clearVwBridgeHomeOverride.
+	 afterClear := [VWBridge vwBridgeHome] on: Error do: [:ex | nil].
+	 self deny: afterClear = 'C:\test\should-be-cleared'
+		description: 'after clear, vwBridgeHome should not return the cleared override value']
+		ensure: [VWBridge clearVwBridgeHomeOverride]!
+
+testTokenFilePathDerivesFromVwBridgeHome
+	"v0.9.2 Phase P P1: tokenFilePath returns vwBridgeHome with .token
+	 appended via backslash. Hermetic via override seam."
+	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWBridge tokenFilePath = 'C:\test\install\.token'
+		description: 'tokenFilePath should be vwBridgeHome , backslash , .token']
+		ensure: [VWBridge clearVwBridgeHomeOverride]!
+
+testLogFilePathDerivesFromVwBridgeHome
+	"v0.9.2 Phase P P1: logFilePath returns vwBridgeHome with vw-bridge.log
+	 appended via backslash. Both class-side and instance-side return the
+	 same path, confirming instance delegation works."
+	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWBridge logFilePath = 'C:\test\install\vw-bridge.log'
+		description: 'class-side logFilePath should be vwBridgeHome , backslash , vw-bridge.log'.
+	 self assert: VWBridge singleton logFilePath = 'C:\test\install\vw-bridge.log'
+		description: 'instance-side logFilePath should delegate to class-side']
+		ensure: [VWBridge clearVwBridgeHomeOverride]!
+
+testScreenshotHelperScriptPathDerivesFromVwBridgeHome
+	"v0.9.2 Phase P P3: screenshotHelperScriptPath returns vwBridgeHome
+	 with scripts/screenshot-helper.ps1 appended via backslash. Both
+	 class-side and instance-side return the same path. P3 relocated the
+	 helper from repo-root scripts/ to vwBridgeHome/scripts/ so a single
+	 env var pins the entire install."
+	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWBridge screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
+		description: 'class-side screenshotHelperScriptPath should derive from override path'.
+	 self assert: VWBridge singleton screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
+		description: 'instance-side screenshotHelperScriptPath should delegate to class-side']
+		ensure: [VWBridge clearVwBridgeHomeOverride]! !
