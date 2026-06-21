@@ -1,13 +1,39 @@
 # Plan — Phase F /screenshot endpoint
 
 **Written:** 2026-06-20 (session-10), after Oracle F1 design consult + F2 graphics-API probe.
-**Updated:** 2026-06-20 (session-11), Q1 resolved — Path A REFUTED across 6 probes. Oracle F3 consult fired (`bg_3e72b537`); decision between Path B (subprocess) and Path C (hand-rolled) pending.
-**Status:** F1 design LOCKED. F2 probe done. **F3 Q1 RESOLVED, Q2/Q3/Q4 awaiting Oracle F3.** Implementation BLOCKED until path decision.
-**Pre-reqs:** v0.9.0 bridge with /wait endpoint shipped.
+**Updated:** 2026-06-20 (session-11), Q1 resolved — Path A REFUTED across 6 probes. Oracle F3 verdict: Path B. TDD scaffold landed (10 RED tests + 16 helpers).
+**Updated:** 2026-06-20 (session-12), Steps 10–16 GREEN via direct-invocation verification. Step 17 PARTIAL/BLOCKED on `OS.ExternalProcess>>wait`.
+**Updated:** 2026-06-21 (session-13), Steps 17–20 COMPLETE. Bridge SHIPPED at v0.9.1 with `/screenshot` endpoint.
+**Status:** **PHASE F3 SHIPPED.** All 20 steps done. v0.9.1 on `origin/main`.
+**Pre-reqs:** v0.9.0 bridge with /wait endpoint shipped — DONE before this phase.
 
 ---
 
-## Session-11 progress (NEW)
+## Session-13 progress (Phase F3 SHIPPED)
+
+| Step | Status | Commit |
+|---|---|---|
+| 17 — wait-mechanism fix | DONE — `OS.ExternalProcess execute:arguments:do:errorStreamDo:` one-shot + `outStream binary` flip | [`5a84f4a`](#) (fix) + [`ab068c2`](#) (probes) |
+| 18 — `/screenshot` HTTP route + binary socket-write | DONE — route at `doDispatch:` L555 + `stream binary` flip for ByteArray responses at `serve:` L430 | [`82f0eb6`](#) |
+| 19 — windowSummaries rect keys for window-target HTTP | DONE — added originX/originY/cornerX/cornerY integer fields (additive, bounds printString preserved) | [`38a56c6`](#) |
+| 20 — v0.9.0 → v0.9.1 bump | DONE — banner + history paragraph + /health + testHealthReturnsCurrentVersion | [`8f03710`](#) |
+
+End-to-end verification at session-13 EOD:
+
+- `curl /health` → `{"status":"ok","version":"0.9.1"}`
+- `POST /screenshot {target:{type:screen}}` → 200 OK + image/png + 855KB + PNG magic + System.Drawing decodes as 2560×1440 Format32bppArgb
+- `POST /screenshot {target:{type:window,appClass:MasLauncher}}` → 200 OK + 27KB + 831×322 matching MasLauncher bounds + System.Drawing decode clean
+
+Two new carry-forward constraints added to [`knowledge/vw-image-api-contract.md`](../knowledge/vw-image-api-contract.md):
+
+- (6) `OS.ExternalProcess execute:arguments:do:errorStreamDo:` one-shot pattern + `outStream binary` is the working synchronous-wait + binary stdout mechanism (resolves session-12 constraint #4).
+- (7) `ExternalReadAppendStream nextPutAll: aByteArray` raises "Strings only store Characters" — flip stream to `binary` first.
+
+Full session details in [`knowledge/HANDOFF-2026-06-21-session13.md`](../knowledge/HANDOFF-2026-06-21-session13.md).
+
+---
+
+## Session-11 progress
 
 ### Q1 RESOLUTION — Path A REFUTED
 
@@ -378,19 +404,19 @@ Session observation: Portfolio window opened at bounds `805@281 corner: 1758@112
 | 7. Binary WriteStream sanity | ✓ DONE session-11 | `WriteStream on: (ByteArray new)` round-trips PNG-magic byte-for-byte; `DeflateStream`/`GZipWriteStream` loaded as Path C reserve |
 | 8. Bridge architecture read | ✓ DONE session-11 | Dispatch at L460-543 (add `/screenshot` at L526), `httpResponse:` at L1837 text-only (need binary sibling), `serve:` socket-write at L384/402 |
 | 9. TDD scaffold — 10 RED tests via test seams | ✓ DONE session-11 | `VWBridge-ScreenshotTest.st` (10 tests + 16 helpers) filed-in via `'path' asFilename fileIn` wrapper; class verified, spot-test ran `1 run, 0 passed, 1 failed, 0 errors` (clean RED via `ensureScreenshotImplemented`) |
-| 10. Add `screenshotCaptureOverride` + `scriptedWindowsForScreenshot` ivars + `clearScreenshotOverrides` to VWBridge | PENDING session-12 | Moves tests past the "Missing" check |
-| 11. Implement `parseAndValidateScreenshotRequest:` + 400/415 envelope | PENDING session-12 | Turns validation tests GREEN (#1, #2, #3) |
-| 12. Implement `httpBinaryResponse:type:body:` (returns ByteArray) + binary-safe socket-write | PENDING session-12 | Turns binary-safety test GREEN (#4) |
-| 13. Implement `handleScreenshotBody:` core flow + override invocation | PENDING session-12 | Turns capture-success test GREEN (#5) |
-| 14. Implement maxBytes check (413) | PENDING session-12 | Turns size-cap test GREEN (#6) |
-| 15. Implement `resolveWindowRectForScreenshot:` (404/409) | PENDING session-12 | Turns window-targeting tests GREEN (#7, #8) |
-| 16. Map failure outcomes (408/500) | PENDING session-12 | Turns failure tests GREEN (#9, #10) |
-| 17. PowerShell helper script + `captureScreenshotViaSubprocess:` (production capture) | PENDING session-12 | Enables real-usage |
-| 18. Add `/screenshot` route to dispatch | PENDING session-12 | Wires endpoint into bridge router |
-| 19. Real-usage verification — capture live PartySearch window via bridge | PENDING session-12 | Quality gate per `ROADMAP-QUALITY-FIRST.md` |
-| 20. Bridge version bump v0.9.0 → v0.9.1 at 4 canonical sites + test assertion | PENDING session-12 | Standard release procedure |
+| 10. Add `screenshotCaptureOverride` + `scriptedWindowsForScreenshot` ivars + `clearScreenshotOverrides` to VWBridge | ✓ DONE session-12 | Commit `38da008` (with Step 11) |
+| 11. Implement `parseAndValidateScreenshotRequest:` + 400/415 envelope | ✓ DONE session-12 | Commit `38da008` (tests #1-#3 GREEN) |
+| 12. Implement `httpBinaryResponse:type:body:` (returns ByteArray) + binary-safe socket-write | ✓ DONE session-12 | Commit `3ffae6d` (test #4 GREEN; socket-write deferred to Step 18) |
+| 13. Implement `handleScreenshotBody:` core flow + override invocation + success headers | ✓ DONE session-12 | Commit `055f67b` (test #5 GREEN, 5 extra headers) |
+| 14. Implement maxBytes check (413) | ✓ DONE session-12 | Commit `f01e744` (test #6 GREEN) |
+| 15. Implement `resolveWindowRectForScreenshot:` (404/409) | ✓ DONE session-12 | Commit `8acf02a` (tests #7 #8 GREEN) |
+| 16. Map failure outcomes (408/500) | ✓ DONE session-12 | Commit `f33d3f7` (tests #9 #10 GREEN — all 10 conceptually GREEN) |
+| 17. PowerShell helper script + `captureScreenshotViaSubprocess:` (production capture) | ✓ DONE session-13 | Commits `307fcf8` (helper script) + `9af652b` (session-12 partial) + `5a84f4a` (session-13 wait-mechanism fix via `execute:arguments:do:errorStreamDo:` one-shot + `outStream binary`) |
+| 18. Add `/screenshot` route to dispatch | ✓ DONE session-13 | Commit `82f0eb6` — route at `doDispatch:` L555 + `stream binary` flip for ByteArray responses in `serve:` L430 |
+| 19. Real-usage verification — capture live window via bridge | ✓ DONE session-13 | Commit `38a56c6` — windowSummaries shape fix (added originX/Y/cornerX/Y) unblocked window-target HTTP; verified MasLauncher capture 27KB 831×322 + System.Drawing decode |
+| 20. Bridge version bump v0.9.0 → v0.9.1 at 4 canonical sites + test assertion | ✓ DONE session-13 | Commit `8f03710` (`/health` reports v0.9.1) |
 
-Estimated session-12 effort: 4-8 hours for steps 10-20 (Oracle's 1-2 session estimate for full Path B implementation, but session-11's scaffolding work compresses session-12 to roughly the lower bound).
+**Phase F3 SHIPPED.** All 20 steps complete; v0.9.1 pushed to `origin/main` (`a12f40b..8f03710`). End-to-end verification at session-13 EOD: `/screenshot` returns valid PNG decodable as 2560×1440 (screen target) and 831×322 (window target) via PowerShell `System.Drawing.Image::FromFile`.
 
 ---
 

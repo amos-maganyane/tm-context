@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-20 (session-9, after parcel-autoload drill)
-source_sessions: 3, 6, 7, 8, 9
+last_verified: 2026-06-21 (session-13, after Phase F3 ship + subprocess wait fix)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -158,7 +158,11 @@ Each entry: what it would do in stock VW → why it's absent here → alternativ
 | `Kernel.Parcel class>>incrementallySearchForParcelsInCache` | UI-driven (`#window`, `#firstLabel:`, fork via `#userBackgroundPriority`) | Same as above; bypass to `ensureLoadedParcel:withVersion:` |
 | Chunk-format file-in | **Comment-only chunks are REJECTED** by the parser. Every chunk needs an executable expression. | Add a no-op expression at end of comment-only chunks, OR use `"..."` comments only inside method bodies (which are inside an executable chunk). |
 | Multi-line `"..."` comments | Terminate at the **first inner `"`**. Outer comment then mis-parses. | Use bracket markers `[...]` instead of `"..."` for example tags inside outer comments. See [Bug #6 fix in session-8](./HANDOFF-2026-06-20-session8.md). |
+| `"..."` comments containing `!` (session-12) | Chunk parser splits at `!` **even inside multi-line comments** → "Unmatched comment quote". | Rewrite `!` out of comments. `!=` → `not equal to` / `non-zero`; `!exists` → `does not exist`. |
 | `Dialog useNativeDialogs: false` | Resets on every `vwnt.exe` restart | Re-toggle via `/eval` after every image launch |
+| `OS.ExternalProcess>>wait` (bare pattern: `new` + `startProcess:arguments:` + `wait`) (session-12) | Returns immediately WITHOUT waiting. `exitStatus` returns 259 (Windows STILL_ACTIVE). `isExited` returns the proc itself, NOT a Boolean. `isActive` never flips false even after subprocess completes. | Use `execute:arguments:do:errorStreamDo:` one-shot instead — see [Subprocess invocation](#subprocess-invocation-session-13) section. |
+| `OS.ExternalProcess` one-shot `do:` block stream (`StandardIOStream`) (session-13) | Character-mode by default. `upToEnd` returns `TwoByteString` with codepage-decoded chars (PNG magic 0x89 → 0xEB). | Send `outStream binary` BEFORE any read. Then `upToEnd` returns `ByteArray` byte-faithful. |
+| `ExternalReadAppendStream>>nextPutAll: aByteArray` (session-13) | Raises `Error 'Strings only store Characters'` — the socket stream from `SocketAccessor>>readAppendStream` is character-mode by default. | Flip to binary: `(response isKindOf: ByteArray) ifTrue: [stream binary]` then `nextPutAll:` succeeds. `nextPut:` byte-loop also works. |
 
 ---
 
@@ -287,6 +291,47 @@ curl.exe -s -X POST http://127.0.0.1:9876/eval `
 | `Invoke-RestMethod` from PowerShell against bridge | Auto-formats arrays into PowerShell tables, breaks JSON | `curl.exe -s` + `--data-binary @file` |
 | PowerShell `-Body` with literal JSON inline | Quote-hell across multiple layers | `--data-binary "@path/to/file.json"` |
 | `cls selectors size > 0 ifTrue:` to test class exists | `cls` might be `nil` from `ifAbsent:` and `nil selectors` errors | Explicit `isNil ifTrue: [...] ifFalse: [...]` |
+| `(VWBridgeTest selector: #foo) run` via `/eval` (session-12) | Assertion failures route to **VW debugger UI which blocks the serve-process indefinitely**. `on: Error do:` does NOT catch `TestFailure`. | Invoke production methods DIRECTLY via `/eval` (e.g. `bridge handleScreenshotBody: '{...}'`) and inspect the response. For full SUnit suite, use a VW Workspace. |
+| `aByteArray indexOfSubCollection: aString startingAt: 1` (session-12) | Returns 0 (not found) — ByteArray holds Integers, String holds Characters; types mismatch. | Convert ByteArray header section to String first via `WriteStream on: String new` + `nextPut: (Core.Character value: byte)` loop, THEN substring-search the String. |
+| PowerShell `>` redirection for binary stdout (session-12) | Applies Out-File semantics with default text encoding (UTF-16 LE with BOM), even when the subprocess writes raw bytes via `[Console]::OpenStandardOutput().Write`. Mangles binary. | Use `.NET Process API` (`ProcessStartInfo` + `BaseStream.CopyTo`) OR `cmd /c "..." > file` (cmd redirection is byte-faithful). NOT PowerShell `>`. |
+
+---
+
+## Subprocess invocation (session-13)
+
+The only working synchronous-wait + binary-stdout pattern in this image is `OS.ExternalProcess>>execute:arguments:do:errorStreamDo:` one-shot with `outStream binary` flip. Bare `proc wait` is broken (session-12 constraint #4 — returns immediately with exit=259 STILL_ACTIVE).
+
+```smalltalk
+| pngBytes stderrText |
+pngBytes := nil.
+stderrText := ''.
+OS.ExternalProcess
+    execute: 'powershell.exe'
+    arguments: #('-ExecutionPolicy' 'Bypass' '-File' 'C:\path\helper.ps1')
+    do: [:outStream |
+        outStream binary.
+        pngBytes := outStream upToEnd]
+    errorStreamDo: [:errStream |
+        stderrText := errStream upToEnd asString].
+"pngBytes is now a ByteArray, byte-faithful."
+```
+
+Why it works:
+
+1. The one-shot drains stdout via the `do:` block during the subprocess lifetime, which makes the internal `wait` synchronize correctly (verified session-13 probe: elapsed 2514ms for ~2.5s capture, vs the bare `wait` returning 0ms).
+2. `outStream binary` flips the `StandardIOStream` from char mode (codepage-decodes bytes) to binary mode (raw bytes). Without it: PNG magic 0x89 → 0xEB via codepage.
+3. Class-side `execute:...` just instantiates via `new` and delegates to the instance-side method — same semantics.
+
+For writing binary responses out a socket (e.g. `/screenshot` PNG), the analog applies to `ExternalReadAppendStream`:
+
+```smalltalk
+(response isKindOf: ByteArray) ifTrue: [stream binary].
+stream nextPutAll: response.
+```
+
+Without the `binary` flip, `nextPutAll: aByteArray` raises `Error 'Strings only store Characters'`. See [`src/vw-bridge/VWBridge.st`](../src/vw-bridge/VWBridge.st) `serve:` L430 for the production usage.
+
+PowerShell helper scripts that emit binary stdout MUST use `[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)` — NOT `Write-Output` / `Write-Host` (text mangling). When invoked via `OS.ExternalProcess` the OS-level anonymous pipe carries bytes; the VW char-mode stream wrapper is what corrupts them without the `binary` flip.
 
 ---
 
@@ -509,6 +554,12 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **Bug #2** (FIXED v0.8.12): `SimpleDialog>>choose:labels:values:default:for:` override in [`VWBridge.st`](../src/vw-bridge/VWBridge.st) L1700-1751 forces the broadcast Yes/No path through cooperatively.
 - **Bug #6** (FIXED v0.8.13 session-8): `[...]` instead of `"..."` for example tags inside outer comments in [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st).
 - **`bodyOf:` 1-arg `indexOfSubCollection:` issue** (FIXED v0.8.13+session-9 A1): swapped to 2-arg form.
+- **`!` in `"..."` comments breaks chunk parser** (session-12): rewrite `!` characters out of comments (`!=` → `not equal to`, etc.). Cost ~90 min debug if hit.
+- **SUnit assertion failures via `/eval` pop VW debugger** (session-12): use direct production-method invocation + response inspection instead. Full SUnit runs go through VW Workspace.
+- **`aByteArray indexOfSubCollection: aString`** returns 0 (session-12): ByteArray-Integer vs String-Character type mismatch. Convert ByteArray → String character-by-character first for substring checks on binary responses.
+- **Bare `OS.ExternalProcess>>wait` does NOT actually wait** (session-12 problem; session-13 FIX): use `execute:arguments:do:errorStreamDo:` one-shot pattern + `outStream binary` flip — see [Subprocess invocation](#subprocess-invocation-session-13) section.
+- **PowerShell `>` redirection mangles binary stdout** (session-12): UTF-16 LE Out-File semantics even when subprocess writes raw bytes. Use .NET Process API OR `cmd /c "..." > file` for byte-faithful redirection.
+- **`ExternalReadAppendStream nextPutAll: aByteArray`** requires `binary` flip (session-13): raises "Strings only store Characters" otherwise. For socket-write of binary responses (e.g. /screenshot PNG): `(response isKindOf: ByteArray) ifTrue: [stream binary]` before `nextPutAll:`.
 
 ---
 
