@@ -59,7 +59,7 @@ Root.Smalltalk defineClass: #VWBridgeScreenshotTest
 	instanceVariableNames: 'bridge authHeaders'
 	classInstanceVariableNames: ''
 	imports: ''
-	category: 'VW-TestBridge-ScreenshotTests'!
+	category: 'VWBridge-Tests'!
 
 !VWBridgeScreenshotTest methodsFor: 'fixture'!
 

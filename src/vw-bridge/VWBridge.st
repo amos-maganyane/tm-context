@@ -38,7 +38,7 @@ Root.Smalltalk defineClass: #VWBridge
 	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots screenshotCaptureOverride scriptedWindowsForScreenshot '
 	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex vwBridgeHomeOverride '
 	imports: ''
-	category: 'VW-TestBridge'!
+	category: 'VWBridge-Core'!
 
 !VWBridge class methodsFor: 'starting'!
 
@@ -2657,44 +2657,6 @@ captureScreenshotViaSubprocess: aSpec rect: aRect
 	result at: 'pngBytes' put: pngBytes.
 	result at: 'width' put: (extent at: 1).
 	result at: 'height' put: (extent at: 2).
-	^result! !
-
-"v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
-Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
-
-!SimpleDialog methodsFor: 'mas-bug2-fix'!
-
-choose: aLabel labels: labels values: values default: defaultValue for: aWindow
-	"v0.8.12 Bug #2 Symptom A fix: synthesize boolean return from accept/cancel
-	 ValueHolders when the framework's force-close yields nil. Conservative -
-	 only fires for confirm-shaped values (Array with: true with: false).
-	 All other nil results pass through unchanged.
-
-	 WHY: closeAndUnschedule + purgeDeadWindows (v0.8.11) wakes the wedged
-	 modal loop cleanly, but the framework hardcodes a nil return on
-	 force-close exit regardless of accept/cancel state. Pre-probe (session-7)
-	 confirmed both ValueHolders retain their bridge-set value through the
-	 unwind. See knowledge/vw-bridge-known-issues.md Bug #2 for the full
-	 investigation.
-
-	 equalize: false matches the conventional default. The original frame 22
-	 method is a 1-message delegator; the equalize: argument is a bytecode
-	 pushSpecial (true/false/nil) and could not be decoded with stripped
-	 sources. If wrong, cosmetic button-width difference only."
-	| result confirmShaped |
-	result := self
-		choose: aLabel
-		labels: labels
-		values: values
-		default: defaultValue
-		equalize: false
-		for: aWindow.
-	confirmShaped := (values size = 2)
-		and: [(values at: 1) == true
-			and: [(values at: 2) == false]].
-	(result == nil and: [confirmShaped]) ifTrue: [
-		self accept value ifTrue: [^true].
-		self cancel value ifTrue: [^false]].
 	^result! !
 
 "=== Auto-start the bridge on file-in and write .token for agent pickup ==="

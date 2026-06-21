@@ -40,7 +40,7 @@ Root.Smalltalk defineClass: #VWBridgeWaitTest
 	instanceVariableNames: 'bridge authHeaders'
 	classInstanceVariableNames: ''
 	imports: ''
-	category: 'VW-TestBridge-WaitTests'!
+	category: 'VWBridge-Tests'!
 
 !VWBridgeWaitTest methodsFor: 'fixture'!
 
