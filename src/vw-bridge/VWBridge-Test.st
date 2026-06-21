@@ -97,8 +97,8 @@ testHealthReturnsCurrentVersion
 	body := self bodyOf: (self dispatch: 'GET /health HTTP/1.1').
 	self assert: (body indexOfSubCollection: '"status":"ok"') > 0
 		description: 'Health body missing status=ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"version":"0.9.0"') > 0
-		description: 'Health body missing version=0.9.0. Body: ' , body!
+	self assert: (body indexOfSubCollection: '"version":"0.9.1"') > 0
+		description: 'Health body missing version=0.9.1. Body: ' , body!
 
 testHealthDoesNotRequireAuth
 	"Health is intentionally auth-exempt for liveness probes."

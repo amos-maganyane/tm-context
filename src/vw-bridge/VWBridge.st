@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.9.0 -- /wait endpoint + 4 predicates (window-appears/dialog-appears/window-closes/dialog-closes) ==="
+"=== VW Widget Bridge v0.9.1 -- /screenshot endpoint (screen+window targets, binary PNG via PowerShell System.Drawing subprocess) ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan.
@@ -12,7 +12,24 @@
  scriptedDialogSnapshots) - production behavior unchanged when all four
  are nil, which is the default. JSON parser extended to support nested
  objects (was flat-only). HTTP 408 added to status code chain.
- See plan/PLAN-PHASE-B-WAIT-ENDPOINT.md."
+ See plan/PLAN-PHASE-B-WAIT-ENDPOINT.md.
+ v0.9.1 (session-13): adds POST /screenshot endpoint with binary PNG response
+ (image/png on success, JSON error envelope on failure). Supports screen and
+ window targets. 16 MiB encoded size cap with 413 screenshot-too-large on
+ exceed (no automatic downscaling per F1 spec). Production capture via
+ PowerShell plus System.Drawing.CopyFromScreen subprocess invoked from VW via
+ OS.ExternalProcess execute:arguments:do:errorStreamDo: one-shot pattern with
+ outStream binary flip for byte-faithful PNG bytes (bare proc wait did NOT
+ actually wait synchronously in this image - session-12 root-caused, session-
+ 13 one-shot pattern fix). Socket-write also flips binary mode for ByteArray
+ responses (default ExternalReadAppendStream char mode rejects ByteArray
+ with Strings only store Characters). windowSummaries shape extended with
+ originX/originY/cornerX/cornerY integer fields so window target /screenshot
+ can extract a Rectangle without parsing the bounds printString. New 2 ivars
+ are test seams (screenshotCaptureOverride for fake capture results +
+ scriptedWindowsForScreenshot for fake window snapshots) so SUnit tests can
+ exercise the handler logic without launching real subprocesses or touching
+ the UI. See plan/PLAN-PHASE-F-SCREENSHOT.md."
 
 Root.Smalltalk defineClass: #VWBridge
 	superclass: #{Core.Object}
@@ -546,7 +563,7 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.9.0"}'].
+				body: '{"status":"ok","version":"0.9.1"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].
