@@ -87,7 +87,7 @@ testHealthReturnsStatusOK
 	"GET /health -> HTTP 200."
 	| resp |
 	resp := self dispatch: 'GET /health HTTP/1.1'.
-	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK') > 0
+	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK' startingAt: 1) > 0
 		description: 'Health should return 200 OK. Status: ' , (self statusLineOf: resp)!
 
 testHealthReturnsCurrentVersion
@@ -95,16 +95,16 @@ testHealthReturnsCurrentVersion
 	 UPDATE the version literal in this test when bumping the bridge."
 	| body |
 	body := self bodyOf: (self dispatch: 'GET /health HTTP/1.1').
-	self assert: (body indexOfSubCollection: '"status":"ok"') > 0
+	self assert: (body indexOfSubCollection: '"status":"ok"' startingAt: 1) > 0
 		description: 'Health body missing status=ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"version":"0.9.1"') > 0
+	self assert: (body indexOfSubCollection: '"version":"0.9.1"' startingAt: 1) > 0
 		description: 'Health body missing version=0.9.1. Body: ' , body!
 
 testHealthDoesNotRequireAuth
 	"Health is intentionally auth-exempt for liveness probes."
 	| resp |
 	resp := self dispatch: 'GET /health HTTP/1.1' headers: Core.Dictionary new.
-	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK') > 0
+	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK' startingAt: 1) > 0
 		description: 'Health should be auth-exempt. Status: ' , (self statusLineOf: resp)! !
 
 !VWB.VWBridgeTest methodsFor: 'tests - auth'!
@@ -113,14 +113,14 @@ testWindowsRequiresAuth
 	"Protected endpoints must reject requests without a valid Bearer token."
 	| resp |
 	resp := self dispatch: 'GET /windows HTTP/1.1' headers: Core.Dictionary new.
-	self assert: (resp indexOfSubCollection: '401') > 0
+	self assert: (resp indexOfSubCollection: '401' startingAt: 1) > 0
 		description: 'Unauthenticated /windows should return 401. Status: ' , (self statusLineOf: resp)!
 
 testWindowsAcceptsValidAuth
 	"With a valid Bearer token, /windows returns 200."
 	| resp |
 	resp := self dispatch: 'GET /windows HTTP/1.1'.
-	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK') > 0
+	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK' startingAt: 1) > 0
 		description: '/windows with valid token should be 200. Status: ' , (self statusLineOf: resp)! !
 
 !VWB.VWBridgeTest methodsFor: 'tests - eval'!
@@ -129,17 +129,17 @@ testEvalEvaluatesArithmetic
 	"POST /eval evaluates Smalltalk and returns the printString of the result."
 	| body |
 	body := self bodyOf: (self dispatch: 'POST /eval HTTP/1.1' body: '2 + 3').
-	self assert: (body indexOfSubCollection: '"ok":true') > 0
+	self assert: (body indexOfSubCollection: '"ok":true' startingAt: 1) > 0
 		description: 'eval response should be ok. Body: ' , body.
-	self assert: (body indexOfSubCollection: '"5"') > 0
+	self assert: (body indexOfSubCollection: '"5"' startingAt: 1) > 0
 		description: 'eval (2+3) should yield 5. Body: ' , body!
 
 testEvalReturnsErrorForBadCode
 	"Unparseable Smalltalk surfaces a structured error, not a crash."
 	| body |
 	body := self bodyOf: (self dispatch: 'POST /eval HTTP/1.1' body: 'this is not smalltalk &&').
-	self assert: ((body indexOfSubCollection: 'eval_failed') > 0
-		or: [(body indexOfSubCollection: '"ok":false') > 0])
+	self assert: ((body indexOfSubCollection: 'eval_failed' startingAt: 1) > 0
+		or: [(body indexOfSubCollection: '"ok":false' startingAt: 1) > 0])
 		description: 'Bad eval should surface a structured error. Body: ' , body! !
 
 !VWB.VWBridgeTest methodsFor: 'tests - bug 2'!
