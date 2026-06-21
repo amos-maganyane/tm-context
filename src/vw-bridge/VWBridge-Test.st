@@ -34,7 +34,7 @@
  - Each test asserts against the raw HTTP response string returned by
    dispatch:headers:body: (status line + headers + body)."
 
-Root.Smalltalk defineClass: #VWBridgeTest
+Smalltalk.VWB defineClass: #VWBridgeTest
 	superclass: #{TestCase}
 	indexedType: #none
 	private: false
@@ -43,7 +43,7 @@ Root.Smalltalk defineClass: #VWBridgeTest
 	imports: ''
 	category: 'VWBridge-Tests'!
 
-!VWBridgeTest methodsFor: 'fixture'!
+!VWB.VWBridgeTest methodsFor: 'fixture'!
 
 setUp
 	"Capture singleton + build authorized headers for the current token."
@@ -81,7 +81,7 @@ bodyOf: aResponse
 		ifTrue: [aResponse copyFrom: idx + sep size to: aResponse size]
 		ifFalse: ['']! !
 
-!VWBridgeTest methodsFor: 'tests - health'!
+!VWB.VWBridgeTest methodsFor: 'tests - health'!
 
 testHealthReturnsStatusOK
 	"GET /health -> HTTP 200."
@@ -107,7 +107,7 @@ testHealthDoesNotRequireAuth
 	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK') > 0
 		description: 'Health should be auth-exempt. Status: ' , (self statusLineOf: resp)! !
 
-!VWBridgeTest methodsFor: 'tests - auth'!
+!VWB.VWBridgeTest methodsFor: 'tests - auth'!
 
 testWindowsRequiresAuth
 	"Protected endpoints must reject requests without a valid Bearer token."
@@ -123,7 +123,7 @@ testWindowsAcceptsValidAuth
 	self assert: (resp indexOfSubCollection: 'HTTP/1.1 200 OK') > 0
 		description: '/windows with valid token should be 200. Status: ' , (self statusLineOf: resp)! !
 
-!VWBridgeTest methodsFor: 'tests - eval'!
+!VWB.VWBridgeTest methodsFor: 'tests - eval'!
 
 testEvalEvaluatesArithmetic
 	"POST /eval evaluates Smalltalk and returns the printString of the result."
@@ -142,7 +142,7 @@ testEvalReturnsErrorForBadCode
 		or: [(body indexOfSubCollection: '"ok":false') > 0])
 		description: 'Bad eval should surface a structured error. Body: ' , body! !
 
-!VWBridgeTest methodsFor: 'tests - bug 2'!
+!VWB.VWBridgeTest methodsFor: 'tests - bug 2'!
 
 testBug2DialogConfirmYesReturnsTrue
 	"v0.8.12 fix: bridge-dismissed Dialog confirm: Yes must return true.
@@ -181,7 +181,7 @@ testBug2DialogConfirmNoReturnsFalse
 	ret := Root.Smalltalk at: #TEST_BUG2_NO_RET.
 	self assert: ret == false description: 'Expected false, got: ' , ret printString! !
 
-!VWBridgeTest methodsFor: 'tests - logging'!
+!VWB.VWBridgeTest methodsFor: 'tests - logging'!
 
 testLogWritesNDJSONToFile
 	"v0.8.13: bridge log: writes a JSON-line to vw-bridge.log containing
@@ -242,7 +242,7 @@ testLogJsonLineWellFormed
 	self assert: (contents lastIndexOf: $}) > 0
 		description: 'Log file missing closing brace'! !
 
-!VWBridgeTest methodsFor: 'tests - purge wedged'!
+!VWB.VWBridgeTest methodsFor: 'tests - purge wedged'!
 
 testPurgeWedgedDialogProcessesReturnsNonNegativeInteger
 	"v0.8.11 purgeWedgedDialogProcesses contract: returns Integer >= 0.
@@ -306,7 +306,10 @@ testPurgeWedgedDialogProcessesUnwedgesActiveModalFork
 	self assert: ret == true
 		description: 'fork did not unwedge to true; result: ' , ret printString! !
 
-!VWBridgeTest methodsFor: 'config'!
+"Stage 2 cleanup: remove old top-level Root.Smalltalk.VWBridgeTest if present (idempotent - defensive guard ensures we only touch the OLD top-level class, never the new VWB.VWBridgeTest)"
+[(Smalltalk at: #VWBridgeTest ifAbsent: [nil]) ifNotNil: [:cls | (cls environment == Root.Smalltalk) ifTrue: [cls removeFromSystem]]] on: Core.Error do: [:ex | nil]!
+
+!VWB.VWBridgeTest methodsFor: 'config'!
 
 testVwBridgeHomeOverrideTakesPriority
 	"v0.9.2 Phase P P1: vwBridgeHomeOverride: takes priority over the

@@ -52,7 +52,7 @@
  - Test method count: 10 (8 per Oracle's TDD order + 2 validation sub-cases
    for format/maxBytes specifics)."
 
-Root.Smalltalk defineClass: #VWBridgeScreenshotTest
+Smalltalk.VWB defineClass: #VWBridgeScreenshotTest
 	superclass: #{TestCase}
 	indexedType: #none
 	private: false
@@ -61,7 +61,7 @@ Root.Smalltalk defineClass: #VWBridgeScreenshotTest
 	imports: ''
 	category: 'VWBridge-Tests'!
 
-!VWBridgeScreenshotTest methodsFor: 'fixture'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'fixture'!
 
 setUp
 	"Capture singleton + build authorized headers for the current token."
@@ -138,7 +138,7 @@ headerContains: aSubstring in: aResponse
 		ifFalse: [aResponse].
 	^(headerSection indexOfSubCollection: aSubstring startingAt: 1) > 0! !
 
-!VWBridgeScreenshotTest methodsFor: 'fixture - helpers'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'fixture - helpers'!
 
 fakePngBytesIncludingNullsAndHighBytes
 	"Returns a small ByteArray containing PNG magic + null bytes + high
@@ -218,7 +218,7 @@ withScriptedScreenshotWindows: aWindowCollection do: aTestBlock
 	bridge scriptedWindowsForScreenshot: aWindowCollection asOrderedCollection.
 	^aTestBlock value! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - validation'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - validation'!
 
 testScreenshotRejectsBadRequest
 	"POST /screenshot with empty body - expect 400 bad-request."
@@ -247,7 +247,7 @@ testScreenshotRejectsInvalidMaxBytes
 	self assert: (self bodyContains: 'maxBytes' in: resp)
 		description: 'Body should reference maxBytes in the error'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - binary response'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - binary response'!
 
 testScreenshotBinaryResponseBuilderRoundTripsPngBytes
 	"Binary safety lock. Fake capture returns bytes including null (0x00)
@@ -269,7 +269,7 @@ testScreenshotBinaryResponseBuilderRoundTripsPngBytes
 	self assert: (self bodyOf: resp) = fakeBytes
 		description: 'Body bytes must round-trip identically (binary safety)'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - capture success'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - capture success'!
 
 testScreenshotFakeCaptureSuccessReturns200WithPngBytes
 	"Happy path with default request. Override returns fake success.
@@ -289,7 +289,7 @@ testScreenshotFakeCaptureSuccessReturns200WithPngBytes
 	self assert: (self headerContains: 'X-VWBridge-Screenshot-Height: 1080' in: resp)
 		description: 'Height header must reflect captured dimension'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - size cap'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - size cap'!
 
 testScreenshotMaxBytesExceededReturns413
 	"Override returns oversize bytes (200 bytes when maxBytes=100).
@@ -306,7 +306,7 @@ testScreenshotMaxBytesExceededReturns413
 	self assert: (self bodyContains: 'screenshot-too-large' in: resp)
 		description: 'Body should reference screenshot-too-large error'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - window targeting'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - window targeting'!
 
 testScreenshotWindowTargetZeroMatchesReturns404
 	"target=window with appClass that does not match any scripted window -
@@ -342,7 +342,7 @@ testScreenshotWindowTargetMultipleMatchesReturns409
 	self assert: captureCalled = false
 		description: 'Capture override must NOT be called when window ambiguous'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - timeout'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - timeout'!
 
 testScreenshotFakeTimeoutReturns408
 	"Override returns a timeout failure outcome - bridge should map status
@@ -357,7 +357,7 @@ testScreenshotFakeTimeoutReturns408
 	self assert: (self bodyContains: 'screenshot-timeout' in: resp)
 		description: 'Body should reference screenshot-timeout error'! !
 
-!VWBridgeScreenshotTest methodsFor: 'tests - capture failure'!
+!VWB.VWBridgeScreenshotTest methodsFor: 'tests - capture failure'!
 
 testScreenshotFakeCaptureFailureReturns500
 	"Override returns a generic capture failure outcome - bridge should
@@ -371,3 +371,6 @@ testScreenshotFakeCaptureFailureReturns500
 		description: 'Expected 500 for capture failure. Got: ' , (self statusLineOf: resp).
 	self assert: (self bodyContains: 'screenshot-capture-failed' in: resp)
 		description: 'Body should reference screenshot-capture-failed error'! !
+
+"Stage 2 cleanup: remove old top-level Root.Smalltalk.VWBridgeScreenshotTest if present (idempotent - defensive guard ensures we only touch the OLD top-level class, never the new VWB.VWBridgeScreenshotTest)"
+[(Smalltalk at: #VWBridgeScreenshotTest ifAbsent: [nil]) ifNotNil: [:cls | (cls environment == Root.Smalltalk) ifTrue: [cls removeFromSystem]]] on: Core.Error do: [:ex | nil]!

@@ -33,7 +33,7 @@
  - All scripted snapshots are OrderedCollections of dialog/window Dictionaries
    matching the shape that windowSummaries / describeDialog: would produce."
 
-Root.Smalltalk defineClass: #VWBridgeWaitTest
+Smalltalk.VWB defineClass: #VWBridgeWaitTest
 	superclass: #{TestCase}
 	indexedType: #none
 	private: false
@@ -42,7 +42,7 @@ Root.Smalltalk defineClass: #VWBridgeWaitTest
 	imports: ''
 	category: 'VWBridge-Tests'!
 
-!VWBridgeWaitTest methodsFor: 'fixture'!
+!VWB.VWBridgeWaitTest methodsFor: 'fixture'!
 
 setUp
 	"Capture singleton + build authorized headers for the current token."
@@ -140,7 +140,7 @@ withFakeClockOnly: aBlock
 	bridge sleepOverride: [:ms | bridge clockOverride: bridge waitClockMilliseconds + ms].
 	^aBlock value! !
 
-!VWBridgeWaitTest methodsFor: 'tests - shared validation'!
+!VWB.VWBridgeWaitTest methodsFor: 'tests - shared validation'!
 
 testWaitRejectsMissingKind
 	"POST /wait with empty body - expect 400 bad-request."
@@ -181,7 +181,7 @@ testWaitUsesDefaults
 	self assert: (self bodyContains: 'HTTP/1.1 408' in: resp)
 		description: 'Expected 408 timeout after default 5000ms. Got: ' , (self statusLineOf: resp)! !
 
-!VWBridgeWaitTest methodsFor: 'tests - window-appears'!
+!VWB.VWBridgeWaitTest methodsFor: 'tests - window-appears'!
 
 testWindowAppearsImmediateSuccess
 	"First scripted snapshot has matching window - expect 200, polls=1."
@@ -242,7 +242,7 @@ testWindowAppearsMultipleMatchesDeterministic
 	self assert: (self bodyContains: 'win-1' in: resp)
 		description: 'First matched should be win-1 (deterministic order)'! !
 
-!VWBridgeWaitTest methodsFor: 'tests - dialog-appears'!
+!VWB.VWBridgeWaitTest methodsFor: 'tests - dialog-appears'!
 
 testDialogAppearsImmediateSuccess
 	"First scripted dialog snapshot contains substring match - expect 200."
@@ -298,7 +298,7 @@ testDialogAppearsSubstringMatchMultiline
 	self assert: (self bodyContains: 'HTTP/1.1 200' in: resp)
 		description: 'Expected 200 multi-line match. Got: ' , (self statusLineOf: resp)! !
 
-!VWBridgeWaitTest methodsFor: 'tests - window-closes'!
+!VWB.VWBridgeWaitTest methodsFor: 'tests - window-closes'!
 
 testWindowClosesAlreadyClosed
 	"First snapshot doesnt contain windowId - succeed immediately."
@@ -365,7 +365,7 @@ testWindowClosesBoundaryRace
 	self assert: (self bodyContains: 'HTTP/1.1 200' in: resp)
 		description: 'Boundary race: final check should win, expect 200 not 408. Got: ' , (self statusLineOf: resp)! !
 
-!VWBridgeWaitTest methodsFor: 'tests - dialog-closes'!
+!VWB.VWBridgeWaitTest methodsFor: 'tests - dialog-closes'!
 
 testDialogClosesAlreadyClosed
 	"First snapshot has no matching dialog - succeed immediately."
@@ -428,3 +428,6 @@ testDialogClosesBoundaryRace
 		resp := self waitResponseFor: '{"kind":"dialog-closes","timeoutMs":300,"intervalMs":100,"messageContains":"StillOpen"}'].
 	self assert: (self bodyContains: 'HTTP/1.1 200' in: resp)
 		description: 'Boundary race: final check should win, expect 200 not 408. Got: ' , (self statusLineOf: resp)! !
+
+"Stage 2 cleanup: remove old top-level Root.Smalltalk.VWBridgeWaitTest if present (idempotent - defensive guard ensures we only touch the OLD top-level class, never the new VWB.VWBridgeWaitTest)"
+[(Smalltalk at: #VWBridgeWaitTest ifAbsent: [nil]) ifNotNil: [:cls | (cls environment == Root.Smalltalk) ifTrue: [cls removeFromSystem]]] on: Core.Error do: [:ex | nil]!

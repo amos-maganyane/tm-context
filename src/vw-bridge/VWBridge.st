@@ -29,9 +29,18 @@
  are test seams (screenshotCaptureOverride for fake capture results +
  scriptedWindowsForScreenshot for fake window snapshots) so SUnit tests can
  exercise the handler logic without launching real subprocesses or touching
- the UI. See plan/PLAN-PHASE-F-SCREENSHOT.md."
+ the UI. See plan/PLAN-PHASE-F-SCREENSHOT.md.
+ v0.9.2 Phase P P2 Stage 2 (session-14): namespace migration - class now
+ lives at Root.VWB.VWBridge (was Root.Smalltalk.VWBridge top-level). Test
+ classes also under Root.VWB. Auto-start chunk defensively stops and
+ removes old top-level classes if present (idempotent cleanup)."
 
-Root.Smalltalk defineClass: #VWBridge
+"=== Define VWB namespace (Phase P P2 Stage 2) ==="
+[(Smalltalk at: #VWB ifAbsent: [nil]) isNil ifTrue: [
+	Root.Smalltalk defineNameSpace: #VWB private: false imports: '' category: 'VWBridge-Core']]
+		on: Core.Error do: [:ex | Transcript cr; show: 'WARN: VWB namespace creation: ', ex description; cr]!
+
+Smalltalk.VWB defineClass: #VWBridge
 	superclass: #{Core.Object}
 	indexedType: #none
 	private: false
@@ -40,7 +49,7 @@ Root.Smalltalk defineClass: #VWBridge
 	imports: ''
 	category: 'VWBridge-Core'!
 
-!VWBridge class methodsFor: 'starting'!
+!VWB.VWBridge class methodsFor: 'starting'!
 
 start
 	"Start the bridge on the default port."
@@ -68,7 +77,7 @@ stop
 singleton
 	^singleton! !
 
-!VWBridge class methodsFor: 'dispatch tracking'!
+!VWB.VWBridge class methodsFor: 'dispatch tracking'!
 
 incrementDispatchDepthFor: aProcess
 	"Bug #5 Stage 2: atomically increment + return the per-process
@@ -99,7 +108,7 @@ decrementDispatchDepthFor: aProcess
 			ifTrue: [dispatchDepthByProcess removeKey: aProcess ifAbsent: [nil]]
 			ifFalse: [dispatchDepthByProcess at: aProcess put: depth - 1]]! !
 
-!VWBridge class methodsFor: 'config'!
+!VWB.VWBridge class methodsFor: 'config'!
 
 vwBridgeHome
 	"v0.9.2 Phase P P1: bridge install root directory. Resolution order:
@@ -142,7 +151,7 @@ screenshotHelperScriptPath
 	 entire install."
 	^self vwBridgeHome , '\scripts\screenshot-helper.ps1'! !
 
-!VWBridge methodsFor: 'accessing'!
+!VWB.VWBridge methodsFor: 'accessing'!
 
 port
 	^port!
@@ -153,7 +162,7 @@ port: anInteger
 token
 	^token! !
 
-!VWBridge methodsFor: 'helpers'!
+!VWB.VWBridge methodsFor: 'helpers'!
 
 globalNamed: aSymbol
 	"Resolve a global by searching the Smalltalk namespace, then key
@@ -187,7 +196,7 @@ beginsWithIgnoreCase: aString prefix: aPrefix
 	s size < p size ifTrue: [^false].
 	^(s copyFrom: 1 to: p size) asLowercase = p asLowercase! !
 
-!VWBridge methodsFor: 'logging'!
+!VWB.VWBridge methodsFor: 'logging'!
 
 log: aString level: aLevel
 	"v0.8.13 multiplexed log sink. Writes to Transcript (with [level] prefix,
@@ -247,7 +256,7 @@ writeLogEntry: aMessage level: aLevel
 		on: self errorClass do: [:ex | nil].
 	[stream close] on: self errorClass do: [:ex | nil]! !
 
-!VWBridge methodsFor: 'wait helpers'!
+!VWB.VWBridge methodsFor: 'wait helpers'!
 
 windowsSnapshotForWait
 	"v0.9.0: Snapshot of currently-open windows. Used by /windows handler AND
@@ -347,7 +356,7 @@ clearWaitOverrides
 	scriptedWindowSnapshots := nil.
 	scriptedDialogSnapshots := nil! !
 
-!VWBridge methodsFor: 'screenshot helpers'!
+!VWB.VWBridge methodsFor: 'screenshot helpers'!
 
 screenshotCaptureOverride: aBlock
 	"v0.9.1: Test seam setter. When non-nil, handleScreenshotBody: invokes
@@ -375,7 +384,7 @@ clearScreenshotOverrides
 	screenshotCaptureOverride := nil.
 	scriptedWindowsForScreenshot := nil! !
 
-!VWBridge methodsFor: 'initialization'!
+!VWB.VWBridge methodsFor: 'initialization'!
 
 generateToken
 	| ms |
@@ -397,7 +406,7 @@ stopListener
 		[listener close] on: self errorClass do: [:ex | nil].
 		listener := nil]! !
 
-!VWBridge methodsFor: 'networking'!
+!VWB.VWBridge methodsFor: 'networking'!
 
 listenerLoop
 	"Forks serve: per connection at userBackgroundPriority so a wedged
@@ -527,7 +536,7 @@ readHeadersFrom: aStream
 			headers at: key put: value]].
 	^headers! !
 
-!VWBridge methodsFor: 'auth'!
+!VWB.VWBridge methodsFor: 'auth'!
 
 authError: requestLine headers: headers
 	"Returns nil if auth passes (or path is exempt). Otherwise returns an HTTP
@@ -553,7 +562,7 @@ authError: requestLine headers: headers
 			body: '{"error":"unauthorized","message":"Invalid token"}'].
 	^nil! !
 
-!VWBridge methodsFor: 'dispatching'!
+!VWB.VWBridge methodsFor: 'dispatching'!
 
 dispatch: requestLine headers: headers body: bodyString
 	"Main dispatcher (v0.9.0). Wraps doDispatch:headers:body: with a
@@ -653,7 +662,7 @@ split: aString on: aCharacter
 	current contents isEmpty ifFalse: [parts add: current contents].
 	^parts! !
 
-!VWBridge methodsFor: 'handlers'!
+!VWB.VWBridge methodsFor: 'handlers'!
 
 handleWindows
 	"GET /windows - enumerate currently-open windows via windowsSnapshotForWait.
@@ -668,7 +677,7 @@ handleTree
 	list == nil ifTrue: [list := Core.OrderedCollection new].
 	^self httpResponse: 200 type: 'application/json' body: (self jsonFor: list)! !
 
-!VWBridge methodsFor: 'widget walking'!
+!VWB.VWBridge methodsFor: 'widget walking'!
 
 windowSummaries
 	| result mgr err |
@@ -748,7 +757,7 @@ describeWidget: aWrapper aspect: anAspect
 	d at: 'value' put: ([aWrapper widget model value printString] on: err do: [:ex | nil]).
 	^d! !
 
-!VWBridge methodsFor: 'interaction'!
+!VWB.VWBridge methodsFor: 'interaction'!
 
 resolveAspect: aspectName inWindowMatching: titleSubstring
 	"Locate {appModel, widgetWrapper} by aspect name.
@@ -986,7 +995,7 @@ urlDecode: aString
 						i := i + 1]]].
 	^out contents! !
 
-!VWBridge methodsFor: 'menu helpers'!
+!VWB.VWBridge methodsFor: 'menu helpers'!
 
 extractLabelText: anObject
 	"Extract label text from a String or wrapper (LabelWithAccessor,
@@ -1095,7 +1104,7 @@ findMenuBarInWindowMatching: titleSubstring
 					mb ~~ nil ifTrue: [matched := mb]]]]].
 	^matched! !
 
-!VWBridge methodsFor: 'window tracking'!
+!VWB.VWBridge methodsFor: 'window tracking'!
 
 controllerSet
 	"Snapshot the currently-scheduled controllers as an IdentitySet.
@@ -1143,7 +1152,7 @@ windowDiffBefore: beforeSet after: afterSet
 	d at: 'closed' put: (self describeControllers: closed).
 	^d! !
 
-!VWBridge methodsFor: 'menu trees'!
+!VWB.VWBridge methodsFor: 'menu trees'!
 
 menuTreeForMenuBar: aMenuBar
 	"Build an OrderedCollection of Dictionaries describing each top-level
@@ -1220,7 +1229,7 @@ menuItemTreeForItem: anItem index: anIndex depth: aDepth
 	d at: 'items' put: itemsCol.
 	^d! !
 
-!VWBridge methodsFor: 'menu dispatching'!
+!VWB.VWBridge methodsFor: 'menu dispatching'!
 
 handleMenuQuery: queryString
 	"GET /menu?windowTitle=X (windowTitle optional)."
@@ -1361,7 +1370,7 @@ walkMenuPath: pathArray inMenuBar: aMenuBar
 		i := i + 1].
 	^Core.Array with: currentItem with: performer with: nil! !
 
-!VWBridge methodsFor: 'eval'!
+!VWB.VWBridge methodsFor: 'eval'!
 
 handleEvalBody: bodyString
 	"POST /eval - evaluate arbitrary Smalltalk source via Compiler.
@@ -1417,7 +1426,7 @@ looksLikeRecursiveDispatch: aSource
 	hasDispatch := (s indexOfSubCollection: 'dispatch' startingAt: 1) > 0.
 	^hasDispatch! !
 
-!VWBridge methodsFor: 'dialogs'!
+!VWB.VWBridge methodsFor: 'dialogs'!
 
 handleDialogsQuery
 	"GET /dialogs - enumerate live SimpleDialog (and subclass, e.g. ExtendedSimpleDialog)
@@ -1704,7 +1713,7 @@ purgeWedgedDialogProcesses
 			[wm purgeDeadWindows. count := count + 1] on: err do: [:ex | nil]]].
 	^count! !
 
-!VWBridge methodsFor: 'ui process'!
+!VWB.VWBridge methodsFor: 'ui process'!
 
 onUIDo: aBlock
 	"Run aBlock on the UI process when possible; otherwise run it directly
@@ -1736,7 +1745,7 @@ wait: aSemaphore timeoutMs: ms
 	aSemaphore wait.
 	[watchdog terminate] on: self errorClass do: [:ex | nil]! !
 
-!VWBridge methodsFor: 'json'!
+!VWB.VWBridge methodsFor: 'json'!
 
 jsonFor: anObject
 	anObject == nil ifTrue: [^'null'].
@@ -1792,7 +1801,7 @@ jsonString: aString
 	out nextPut: $".
 	^out contents! !
 
-!VWBridge methodsFor: 'json parsing'!
+!VWB.VWBridge methodsFor: 'json parsing'!
 
 jsonParseFlat: aString
 	"JSON object parser. Returns Dictionary keyed by String. Values are
@@ -1939,7 +1948,7 @@ safeJsonFor: anObject
 	"Wrap jsonFor: in an error handler. Returns 'null' on any failure."
 	^[self jsonFor: anObject] on: self errorClass do: [:ex | 'null']! !
 
-!VWBridge methodsFor: 'http'!
+!VWB.VWBridge methodsFor: 'http'!
 
 httpResponse: code type: contentType body: bodyString
 	"v0.9.1: Refactored to use httpReasonPhraseFor: (centralized) for
@@ -2036,7 +2045,7 @@ appendAsciiString: aString toByteStream: aWriteStream
 	 can reach an HTTP header line."
 	aString do: [:ch | aWriteStream nextPut: ch asInteger]! !
 
-!VWBridge methodsFor: 'wait handler'!
+!VWB.VWBridge methodsFor: 'wait handler'!
 
 handleWait: aBodyString
 	"v0.9.0 POST /wait - bridge predicate-wait endpoint. Parses JSON body,
@@ -2309,7 +2318,7 @@ waitTimeoutBodyFor: aSpec result: aResult polls: pollCount elapsedMs: elapsed
 	body at: 'polls' put: pollCount.
 	^self jsonFor: body! !
 
-!VWBridge methodsFor: 'screenshot handler'!
+!VWB.VWBridge methodsFor: 'screenshot handler'!
 
 handleScreenshotBody: aBodyString
 	"v0.9.1 POST /screenshot - bridge screen-capture endpoint. Returns
@@ -2660,17 +2669,23 @@ captureScreenshotViaSubprocess: aSpec rect: aRect
 	^result! !
 
 "=== Auto-start the bridge on file-in and write .token for agent pickup ==="
-| f tokenPath |
-VWBridge stop.
-VWBridge start.
-tokenPath := VWBridge tokenFilePath.
+"Stage 2: stop and remove old top-level Root.Smalltalk.VWBridge if present (defensive idempotent cleanup) before starting the new VWB.VWBridge."
+| f tokenPath oldVwBridge |
+oldVwBridge := Smalltalk at: #VWBridge ifAbsent: [nil].
+(oldVwBridge notNil and: [oldVwBridge environment == Root.Smalltalk]) ifTrue: [
+	[oldVwBridge stop] on: Core.Error do: [:ex | nil].
+	[oldVwBridge removeFromSystem] on: Core.Error do: [:ex |
+		Transcript cr; show: 'WARN: could not remove old Root.Smalltalk.VWBridge: ', ex description; cr]].
+VWB.VWBridge stop.
+VWB.VWBridge start.
+tokenPath := VWB.VWBridge tokenFilePath.
 f := [tokenPath asFilename writeStream] on: Core.Error do: [:ex | nil].
 f == nil
 	ifTrue: [Transcript cr; show: 'WARN: could not write .token file (', tokenPath, ') - copy token manually from Transcript'; cr]
 	ifFalse: [
 		[f lineEndTransparent] on: Core.Error do: [:ex | nil].
-		f nextPutAll: VWBridge singleton token.
+		f nextPutAll: VWB.VWBridge singleton token.
 		f close.
-		Transcript cr; show: 'Token written to .token: '; show: VWBridge singleton token; cr]!
+		Transcript cr; show: 'Token written to .token: '; show: VWB.VWBridge singleton token; cr]!
 
 		
