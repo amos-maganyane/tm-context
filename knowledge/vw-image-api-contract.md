@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-21 (session-18, after Phase P P5 ship: Start-VWBridge.ps1+bat wrapper via vwnt.exe -filein switch verified through 5-cycle quality gate; AppDevGuide.pdf p36 documents -filein verbatim; ImageConfigurationSystem allowFilein=true in this MAS image)
-source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18
+last_verified: 2026-06-21 (session-19, after Phase P P6 ship: VWBridge.pcl + VWBridge.pst binary parcel artifacts at src/vw-bridge/parcels/; Start-VWBridge.ps1 supports -Mode FileIn|Parcel; canonical Kernel.Parcel>>parcelOutOn: invocation enabled via Cursor>>showWhile: monkey-patch + methodDictionary restore; 5-cycle quality gate GREEN mean 8.43s/cycle)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -702,16 +702,141 @@ Mean 9.11s end-to-end. /health 200 in 3 polls (1500ms) every cycle. VWB.VWBridge
 
 **Token-tail repeat (cycle 4 → cycle 5)**: both ended `-199161`. Token is `<timestamp>-<random>` shape; high (timestamp) part advanced cleanly each cycle, low (random) part happens to repeat. As-a-whole tokens still distinct (cycle 4 `3959506086034-199161` vs cycle 5 `3959506095072-199161`). Not a regression but worth flagging — may warrant future probe of token-random entropy.
 
-### Cold-start path table (post-session-18)
+### Cold-start path table (post-session-19)
 
 | Scenario | Path |
 |---|---|
-| Default cold-start | [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) (or `.ps1` directly) |
-| Quality-gate cycling | `Start-VWBridge.ps1 -KillExisting` |
+| Default cold-start (FileIn) | [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) or `Start-VWBridge.ps1 -Mode FileIn` (or just `.ps1` directly) |
+| Parcel cold-start (P6 production) | `Start-VWBridge.ps1 -Mode Parcel` — loads `parcels/VWBridge.pcl` + post-load start-script |
+| Quality-gate cycling | `Start-VWBridge.ps1 -KillExisting` (FileIn or `-Mode Parcel`) |
 | Wrapper buggy / emergency fallback | VW Workspace paste of [`load.st`](../src/vw-bridge/load.st) body (AGENTS.md cold-start exception persists for recovery only) |
 | Reload while bridge UP | POST `load.st` content as `/eval` body (idempotent) |
 | In-image quality-gate test | In-place unload+load+verify single-/eval-call pattern (session-17 technique, still useful for fast iteration without process restart) |
-| P6 parcel load (future) | Same wrapper, switch `-filein <generated>` → `-pcl <parcel-path>` |
+| Headless build of new .pcl | Cursor>>showWhile: monkey-patch + canonical `Kernel.Parcel>>parcelOutOn:withSource:hideOnLoad:republish:backup:` (session-19 ship — see [Phase P P6 section](#phase-p-p6--vwbridgepcl-binary-parcel--start-vwbridgeps1--mode-parcel-session-19)) |
+
+---
+
+## Phase P P6 — VWBridge.pcl binary parcel + Start-VWBridge.ps1 -Mode Parcel (session-19)
+
+Phase P P6 SHIPPED session-19 after extensive empirical investigation (24 probes + Oracle consult + research). The canonical VW API for headless binary parcel build (`Kernel.Parcel>>parcelOutOn:withSource:hideOnLoad:republish:backup:`) wraps its actual write in `Cursor wait showWhile: [block]` — a UI progress notifier that wedges headless bridge listeners. AppDevGuide.pdf documents parcel build ONLY through UI (Runtime Packager / System Browser); StoreCI-Building (community CI tool) implements its own `ParcelWriter` class to fill this gap but is ABSENT in this MAS image.
+
+**Resolution**: temporary `Cursor>>showWhile:` monkey-patch + restore via `methodDictionary` swap, with canonical `parcelOutOn:` for the actual build. Verified headless-safe and 5-cycle quality-gate green.
+
+### The Cursor>>showWhile: wedge + monkey-patch resolution
+
+`Kernel.Parcel>>parcelOutOn:withSource:hideOnLoad:republish:backup:` messages list includes `#showWhile:` `#wait` `#normal` — `Cursor wait showWhile: [block]` wraps the actual write. In headless mode (no display server), the cursor change attempt blocks indefinitely. `Smalltalk.Dialog useNativeDialogs: false` (Bug #2 fix) does NOT prevent it — the call doesn't route through `SimpleDialog`.
+
+The pass-through patch:
+
+```smalltalk
+| oldMethod patchInstalled |
+oldMethod := Cursor compiledMethodAt: #showWhile:.
+patchInstalled := false.
+[
+    [Cursor compile: 'showWhile: aBlock ^aBlock value' classified: '*VWBridge-Patches temp-headless-build'.
+     patchInstalled := true]
+        on: Core.Notification do: [:n | n resume].
+    patchInstalled ifTrue: [
+        "... call parcelOutOn: or any other UI-wrapped API ..."
+    ]
+] ensure: [
+    patchInstalled ifTrue: [
+        Cursor methodDictionary at: #showWhile: put: oldMethod]].
+```
+
+Restore via `methodDictionary at:put:` (not `recompile`) because sources are stripped — the saved `oldMethod` is a `CompiledMethod` object that can be re-installed by direct dictionary mutation. The `ensure:` block guards against permanent system change if the build path errors.
+
+### parcelOutOn: invocation quirks
+
+`parcel parcelOutOn: pclFilename withSource: pstFilename hideOnLoad: false republish: false backup: false` — the keyword names are MISLEADING:
+
+- `withSource:` — **a Filename for the .pst source companion (NOT a boolean)**. Passing `nil`/`false`/a Stream raises `MessageNotUnderstood: #asLogicalFileSpecification` because the method internally calls `withSource asLogicalFileSpecification`. Even when source is "hidden", pass a real `.pst` path (Oracle warned). The wrapper writes the .pst file as a side-effect.
+- `hideOnLoad:` — boolean (3rd positional). Controls whether the parcel is "hidden on load" (post-load UI visibility, not source-hiding).
+- `republish:` — boolean (4th positional). For Store integration. `false` for standalone build.
+- `backup:` — boolean (5th positional). Whether to keep prior version. `false` for clean build.
+
+`hideSource:` (4-th boolean arg) lives in the 6-arg writer-level `CodeWriter>>writeToParcelFileNamed:sourceFileNamed:oldSourceIndex:hideSource:republish:backup:` that `parcelOutOn:` delegates to via `prepareCodeWriter:`. The parcel-level call signature uses different keyword names.
+
+### Parcel content-add API (createParcelNamed: returns EMPTY)
+
+`Kernel.Parcel class>>createParcelNamed: 'Name'` registers an EMPTY Parcel (summary = `'Text for an Empty Parcel'`, `definedThings = IdentitySet()`). Content MUST be added explicitly via instance-side selectors before `parcelOutOn:`:
+
+| Selector | Purpose |
+|---|---|
+| `addNameSpace:` | Add a namespace to the parcel (parcel auto-creates it on load if not present) |
+| `addNameSpace:attributes:` | Same with metadata |
+| `addEntiretyOfClass:` | Add a class + all its instance/class methods + comment |
+| `addEntiretyOfClasses:` | Same for an Array of classes |
+| `addClass:` | Add class definition only (no methods) |
+| `addClassAndAllSelectors:` | Add class + selectors (subtly different from addEntirety) |
+| `addSelector:class:` | Add an extension method to a class (for *-categorized methods like `*VWBridge-Patches mas-bug2-fix`). The class arg is the **instance side** for instance methods; pass `SomeClass class` for class-side. |
+| `addBinding:in:` / `addName:in:` / `addNames:in:` | Add namespace bindings |
+| `addObject:` / `addObject:named:` | Add Smalltalk-serialized objects |
+
+After `parcelOutOn:` succeeds, ALWAYS call `[Kernel.Parcel removeParcelNamed: name] on: Core.Notification do: [:n | n resume]` to clean up the registry (raises a benign `'Notification - '` per constraint #38).
+
+### VWBridge.pcl content (session-19 production build)
+
+```smalltalk
+parcel := Kernel.Parcel createParcelNamed: 'VWBridge'.
+parcel addNameSpace: VWB.
+parcel addEntiretyOfClass: VWB.VWBridge.
+parcel addSelector: #choose:labels:values:default:for: class: SimpleDialog.
+parcel
+    parcelOutOn: '<VW_BRIDGE_HOME>/parcels/VWBridge.pcl' asFilename
+    withSource: '<VW_BRIDGE_HOME>/parcels/VWBridge.pst' asFilename
+    hideOnLoad: false
+    republish: false
+    backup: false.
+```
+
+Output: 52,478-byte `.pcl` + 128,285-byte `.pst` companion. Binary header bytes match stock VW parcel format (`00 11 00 00 00 D0 00 00 00 01 1D` + ASCII `Smalltalk Binary Storage File` + length-prefixed parcel-name + length-prefixed version-string `'no version'`).
+
+VWBridge-Tests.pcl (intended VWB.VWBridgeTest + VWB.VWBridgeWaitTest + VWB.VWBridgeScreenshotTest) **DEFERRED** — the build wedged the bridge mid-`parcelOutOn:` with 3 test classes (Cursor monkey-patch held but some OTHER UI/dependency path tripped). Not on production critical path; future iteration if dev/QA distribution shape needs it.
+
+### .pst companion file dependency
+
+The `.pcl` embeds a reference to its `.pst` source companion. `Kernel.Parcel loadParcelFrom: pclFilename` looks for `pcl.pst` alongside the `.pcl`. If absent, VW pops a confirmation dialog: `'Failed to find source file <Name>.pst. Ok to load without target source?'` — which **wedges image startup in headless mode** (no display server to receive the click).
+
+Two fixes:
+
+1. **Ship `.pst` alongside `.pcl`** (current session-19 approach) — commit both binary files to git. Stock VW does this (UIPainter.pst 1.6 MB lives alongside UIPainter.pcl 670 KB).
+2. **Rebuild with `hideOnLoad: true`** (clean alternative, deferred) — suppress source dependency at load. Trades a tiny build difference for ~128 KB less in distribution.
+
+### Wrapper -Mode FileIn|Parcel switch (Start-VWBridge.ps1)
+
+[`scripts/Start-VWBridge.ps1`](../src/vw-bridge/scripts/Start-VWBridge.ps1) gained a `-Mode` parameter session-19:
+
+- `-Mode FileIn` (default, P5 path) — chunk-wrap `load.st` (5-file file-in + start + token-write) + `vwnt.exe -filein <generated-chunk>`
+- `-Mode Parcel` — chunk-wrap [`parcel-start.st`](../src/vw-bridge/parcel-start.st) (post-parcel-load: start + token-write) + `vwnt.exe -pcl <parcel> -filein <generated-chunk>`
+
+Switch ordering: `-pcl <parcel> -filein <chunk>` (parcel BEFORE filein). AppDevGuide.pdf p470 documents left-to-right command-line processing — `-pcl` parses first (loads the parcel, adds namespace+classes), then `-filein` (executes the post-load start script which depends on the loaded classes).
+
+### Quality gate (session-19, Oracle's 5-cycle spec, all Parcel mode)
+
+5 consecutive cold-start cycles passed:
+
+| Cycle | Elapsed | PID transition | Token tail | All verifications |
+|---|---|---|---|---|
+| 1 (dry-run, manual) | ~5s | 2232 → 3632 | `…-564079` → `…-65801` | ✓ |
+| 2 | 9.01s | 3632 → 8872 | `…-65801` → `…-65801` | ✓ |
+| 3 | 8.25s | 8872 → 7960 | `…-65801` → `…-65801` | ✓ |
+| 4 | 8.16s | 7960 → 5864 | `…-65801` → `…-65801` | ✓ |
+| 5 | 8.32s | 5864 → 7532 | `…-65801` → `…-65801` | ✓ |
+
+**Mean 8.43s for cycles 2-5** — slightly FASTER than P5's 9.11s (less work in parcel-start.st vs load.st). `/health` 200 in 3 polls (1500ms) every cycle. `useNativeDialogs: false` re-armed every cycle. All 5 PIDs distinct. Same token-suffix-repeat oddity as session-18 (cycles 2-5 all ended `-65801`; tokens as wholes still distinct due to advancing timestamp portion).
+
+**Post-cycle-5 deep state probe** confirmed lean production install: env=#VWB, top-level=nil, **1 class in VWB (only `#VWBridge` — no Test classes loaded)**, port 9876, SimpleDialog override category EXACT match `'*VWBridge-Patches mas-bug2-fix'`, `usesNativeDialogs=false`. **Parcel mode delivers a strictly leaner image than FileIn mode** (which loads all 4 classes via file-in of the 5 source files).
+
+### Carry-forward constraints emitted by P6 work (35-40)
+
+See the constraint summary at the end of this doc:
+- **35** Cursor>>showWhile: is the headless wedge culprit for parcelOutOn: (not Smalltalk.Dialog)
+- **36** Kernel.Parcel>>createParcelNamed: returns EMPTY parcel; content added explicitly
+- **37** parcelOutOn:withSource: is a Filename arg (not a boolean as the keyword suggests)
+- **38** Kernel.Parcel class>>removeParcelNamed: raises Notification (must resume)
+- **39** CodeWriter is the binary write engine (Smalltalk.CodeWriter, env=#Kernel, top-level)
+- **40** Parcel write embeds .pst path reference; ship .pst alongside .pcl OR use hideOnLoad:true
 
 ---
 
@@ -957,6 +1082,12 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **`Smalltalk.Dialog` has asymmetric setter/getter for native-dialogs flag** (session-18): setter is `useNativeDialogs:` (keyword, 1-arg) — what AGENTS.md cold-start step 3 references and what the Phase P P5 wrapper calls post-launch. Getter is `usesNativeDialogs` (unary, with an EXTRA 's' in 'uses', returns Boolean). The expected symmetric getter `useNativeDialogs` (no extra 's') does NOT exist and raises `MessageNotUnderstood` on probe. Verification probes must use the asymmetric form: `(Dialog class canUnderstand: #useNativeDialogs:)` for setter presence, `Dialog usesNativeDialogs` for current value.
 - **`vwnt.exe -filein <chunk-file>` switch + `ImageConfigurationSystem` allow-flag state** (session-18 SHIPPED Phase P P5): `-filein` documented verbatim on `C:\visualworks931\doc\AppDevGuide.pdf` p36 + verified through 5-cycle quality gate (mean 9.11s per cycle, /health 200 in 1500ms). Behavior: takes one or more `.st` chunk files; image continues running after file-in (unlike `-evaluate` which exits). Generic syntax: `<oe> [oe-switches] <image-name> [image-switches]` — image name MUST precede switches. `Core.ImageConfigurationSystem` gates which image-level switches are honored per allow-flag (probe F session-18): allowFilein=true, allowExpressions=true, allowParcelLoading=true (good for P6 -pcl), allowSettings=false, allowDevelopment=false, useDefaultConfigFile=false. Top-level `^` in chunk file-in is silently consumed (probe D session-18) — same as `/eval` for `'path' asFilename fileIn`. See [Phase P P5 section](#phase-p-p5--start-vwbridgeps1-wrapper-via-vwntexe--filein-session-18) for the wrapper design + switch table.
 - **`-err errorFile` is Runtime-Packager-only** (session-18 surprise): per AppDevGuide.pdf p481, `-err` and `-notifier notifierClass` are listed under "Runtime Packager installs two additional command-line options". In non-RuntimePackager images (like ours), the switch is silently accepted but the error file is NEVER created. Phase P P5 wrapper passes `-err <errfile>` defensively but handles missing file gracefully. Means we have ZERO startup-side stderr visibility without an alternative redirect mechanism (e.g., piping via `Start-Process -RedirectStandardError`, which requires non-detached process spawning and is incompatible with our detached-launch design).
+- **`Cursor>>showWhile:` is the headless wedge culprit for `parcelOutOn:`** (session-19 SHIPPED Phase P P6): `Kernel.Parcel>>parcelOutOn:withSource:hideOnLoad:republish:backup:` wraps its real binary write in `Cursor wait showWhile: [block]`. In headless mode the cursor change blocks indefinitely, wedging the bridge listener. `Smalltalk.Dialog useNativeDialogs: false` does NOT prevent it (this path doesn't go through SimpleDialog). Workaround: save `Cursor compiledMethodAt: #showWhile:`, install pass-through patch via `Cursor compile: 'showWhile: aBlock ^aBlock value' classified: '*VWBridge-Patches temp-headless-build'`, call `parcelOutOn:`, restore via `Cursor methodDictionary at: #showWhile: put: oldMethod` inside an `ensure:` block. See [Phase P P6 section](#phase-p-p6--vwbridgepcl-binary-parcel--start-vwbridgeps1--mode-parcel-session-19). Reusable for any headless invocation of canonical VW APIs that wrap work in `Cursor wait showWhile:`.
+- **`Kernel.Parcel class>>createParcelNamed:` returns an EMPTY parcel** (session-19): not auto-populated from class>>category matches. Summary = `'Text for an Empty Parcel'`, `definedThings = IdentitySet()`. Content MUST be added explicitly before `parcelOutOn:` via instance-side selectors: `addNameSpace:`, `addEntiretyOfClass:`, `addEntiretyOfClasses:`, `addClass:`, `addClassAndAllSelectors:`, `addSelector:class:` (extension method — class arg is instance side for instance methods), `addBinding:in:`, `addName:in:`, `addObject:`. After `parcelOutOn:` succeeds, cleanup with `[Kernel.Parcel removeParcelNamed: name] on: Core.Notification do: [:n | n resume]` to drop from `parcelList`.
+- **`parcelOutOn:withSource:` second arg is a Filename, not a boolean** (session-19): the keyword name `withSource:` suggests `withSource: true/false` but actually means `withSource: <pstFilename>` — a `Filename` for the `.pst` source companion. Passing `nil`/`false`/a Stream raises `MessageNotUnderstood: #asLogicalFileSpecification` because the method internally calls `asLogicalFileSpecification` on the source arg. The 3rd positional `hideOnLoad:` IS the boolean (suppresses post-load UI dialog, not source-hiding). The 4-th boolean `hideSource:` lives in the lower-level 6-arg writer call `CodeWriter>>writeToParcelFileNamed:sourceFileNamed:oldSourceIndex:hideSource:republish:backup:`. The wrapping `parcelOutOn:` translates `withSource:` → `sourceFileNamed:` + always writes a `.pst` companion regardless of `hideOnLoad:`.
+- **`Kernel.Parcel class>>removeParcelNamed:` raises Notification** (session-19): a benign `'Notification - '` fires during the removal. Naive `[...] on: Core.Exception do: [...]` catches it and ABORTS the removal — parcel stays in `parcelList`. Use the Notification-resume pattern matching constraint #25: `[Kernel.Parcel removeParcelNamed: name] on: Core.Notification do: [:n | n resume]`. Wrapped within a broader `ensure:` block for guaranteed cleanup-on-error.
+- **`CodeWriter` is the binary parcel write engine** (session-19): top-level `Smalltalk.CodeWriter` (env=#Kernel, super=ObjectTracer, 6 class-side selectors, 123 inst-side selectors). Inst-side `writeToParcelFileNamed:sourceFileNamed:oldSourceIndex:hideSource:republish:backup:` is the actual binary-write entry point that `parcelOutOn:` delegates to via `prepareCodeWriter:`. None of CodeWriter's methods call `#showWhile:` directly — the UI wrapper is at the `parcelOutOn:` layer, NOT in the writer. Direct CodeWriter invocation is theoretically possible but requires reverse-engineering the ChangeSet + codeComponent setup that `parcelOutOn:` does (session-19 attempted and failed: MNU `#removeKey:ifAbsent:` on nil receiver because parcel wasn't registered in some ChangeSet/SourceFileManager dict). The Cursor monkey-patch (constraint #35) bypasses this complexity by enabling the canonical wrapper invocation.
+- **Parcel write embeds `.pst` path reference; ship `.pst` alongside `.pcl`** (session-19 P6): `Kernel.Parcel loadParcelFrom: pclFilename` looks for `pcl.pst` source companion alongside the `.pcl`. If absent, VW pops `'Failed to find source file <Name>.pst. Ok to load without target source?'` confirmation dialog that wedges headless image startup. Two fixes: (a) commit `.pst` alongside `.pcl` in distribution (current P6 approach — stock VW does this, UIPainter.pst 1.6 MB lives alongside UIPainter.pcl 670 KB), or (b) rebuild parcel with `hideOnLoad: true` to suppress source dependency. VW binary parcel format: magic header `00 11 00 00 00 D0 00 00 00 01 1D` + ASCII `Smalltalk Binary Storage File` + length-prefixed parcel name + length-prefixed version string.
 
 ---
 
