@@ -2252,56 +2252,60 @@ handleScreenshotBody: aBodyString
 	"Step 15: Resolve target window BEFORE invoking capture (404/409 paths
 	 must not trigger capture per F1 spec - first-match-wins is a flake
 	 generator). For screen target, resolution is a no-op returning rect=nil
-	 (subprocess captures full virtual screen via [SystemInformation]::
+	 (subprocess captures full virtual screen via SystemInformation
 	 VirtualScreen in Step 17)."
 	resolution := self resolveWindowRectForScreenshot: spec.
 	(resolution at: 'ok') = false ifTrue: [
 		^self httpResponse: (resolution at: 'status') type: 'application/json'
 			body: (self jsonScreenshotErrorBodyFor: resolution)].
 	rect := resolution at: 'rect'.
-	"Try test seam override first; production capture is Step 17."
-	screenshotCaptureOverride ifNotNil: [
-		outcome := screenshotCaptureOverride value: spec value: rect.
-		(outcome isKindOf: Core.Dictionary) ifTrue: [
-			(outcome at: 'ok' ifAbsent: [false]) = true
-				ifTrue: [
-					| pngBytes maxBytes extraHdrs |
-					pngBytes := outcome at: 'pngBytes'.
-					maxBytes := spec at: 'maxBytes'.
-					"Step 14: post-capture size cap. F1 spec mandates 413 with
-					 screenshot-too-large error code if encoded PNG exceeds the
-					 caller's maxBytes (default + hard cap = 16777216 = 16 MiB).
-					 No automatic downscaling - pathological capture is REJECTED
-					 not silently corrupted (preserves forensic fidelity)."
-					pngBytes size > maxBytes ifTrue: [
-						| errSpec |
-						errSpec := self screenshotErrorWithCode: 'screenshot-too-large'
-							status: 413
-							message: 'encoded PNG size ' , pngBytes size printString , ' bytes exceeds maxBytes ' , maxBytes printString.
-						^self httpResponse: 413 type: 'application/json'
-							body: (self jsonScreenshotErrorBodyFor: errSpec)].
-					extraHdrs := Core.OrderedCollection new.
-					extraHdrs add: 'Cache-Control: no-store'.
-					extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
-					extraHdrs add: 'X-VWBridge-Screenshot-Target: ' , (spec at: 'targetType').
-					extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
-					extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
-					^self httpBinaryResponse: 200 type: 'image/png'
-						body: pngBytes extraHeaders: extraHdrs]
-				ifFalse: [
-					"Step 16: ok=false failure outcome - map outcome.status to HTTP
-					 status code, outcome.error to F1 error code, outcome.message
-					 to human detail. Defaults are conservative (500 + screenshot-
-					 capture-failed + generic message) for outcomes missing fields."
-					| failSpec |
-					failSpec := self screenshotErrorWithCode: (outcome at: 'error' ifAbsent: ['screenshot-capture-failed'])
-						status: (outcome at: 'status' ifAbsent: [500])
-						message: (outcome at: 'message' ifAbsent: ['unspecified capture failure']).
-					^self httpResponse: (failSpec at: 'status') type: 'application/json'
-						body: (self jsonScreenshotErrorBodyFor: failSpec)]]].
-	"Production capture path - lands in Step 17."
-	^self httpResponse: 500 type: 'application/json'
-		body: '{"error":"screenshot-not-yet-implemented","message":"production capture path lands in Step 17"}'!
+	"Capture: prefer test seam override, fall through to production subprocess.
+	 Both paths return outcome Dictionary with same Oracle F3 shape so the
+	 outcome-handling code is identical regardless of source. Override path
+	 stays in serve-process directly; subprocess path forks powershell.exe."
+	outcome := screenshotCaptureOverride
+		ifNotNil: [screenshotCaptureOverride value: spec value: rect]
+		ifNil: [self captureScreenshotViaSubprocess: spec rect: rect].
+	"Catastrophic: capture did not return a Dictionary (override block bug)"
+	(outcome isKindOf: Core.Dictionary) ifFalse: [
+		^self httpResponse: 500 type: 'application/json'
+			body: '{"error":"screenshot-capture-failed","message":"capture did not return a result dictionary"}'].
+	(outcome at: 'ok' ifAbsent: [false]) = true
+		ifTrue: [
+			| pngBytes maxBytes extraHdrs |
+			pngBytes := outcome at: 'pngBytes'.
+			maxBytes := spec at: 'maxBytes'.
+			"Step 14: post-capture size cap. F1 spec mandates 413 with
+			 screenshot-too-large error code if encoded PNG exceeds the
+			 caller maxBytes (default + hard cap = 16777216 = 16 MiB).
+			 No automatic downscaling - pathological capture is REJECTED
+			 not silently corrupted (preserves forensic fidelity)."
+			pngBytes size > maxBytes ifTrue: [
+				| errSpec |
+				errSpec := self screenshotErrorWithCode: 'screenshot-too-large'
+					status: 413
+					message: 'encoded PNG size ' , pngBytes size printString , ' bytes exceeds maxBytes ' , maxBytes printString.
+				^self httpResponse: 413 type: 'application/json'
+					body: (self jsonScreenshotErrorBodyFor: errSpec)].
+			extraHdrs := Core.OrderedCollection new.
+			extraHdrs add: 'Cache-Control: no-store'.
+			extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
+			extraHdrs add: 'X-VWBridge-Screenshot-Target: ' , (spec at: 'targetType').
+			extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
+			extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
+			^self httpBinaryResponse: 200 type: 'image/png'
+				body: pngBytes extraHeaders: extraHdrs]
+		ifFalse: [
+			"Step 16: ok=false failure outcome - map outcome.status to HTTP
+			 status code, outcome.error to F1 error code, outcome.message
+			 to human detail. Defaults are conservative (500 + screenshot-
+			 capture-failed + generic message) for outcomes missing fields."
+			| failSpec |
+			failSpec := self screenshotErrorWithCode: (outcome at: 'error' ifAbsent: ['screenshot-capture-failed'])
+				status: (outcome at: 'status' ifAbsent: [500])
+				message: (outcome at: 'message' ifAbsent: ['unspecified capture failure']).
+			^self httpResponse: (failSpec at: 'status') type: 'application/json'
+				body: (self jsonScreenshotErrorBodyFor: failSpec)]!
 
 parseAndValidateScreenshotRequest: aBodyString
 	"Parse + validate /screenshot JSON body. Returns Dictionary with key
@@ -2461,7 +2465,123 @@ windowMatchesScreenshotFilter: aWindowDict appClass: aClassName titleContains: a
 	aTitleSubstring == nil ifFalse: [
 		(actualTitle asLowercase indexOfSubCollection: aTitleSubstring asLowercase startingAt: 1) > 0
 			ifFalse: [^false]].
-	^true! !
+	^true!
+
+screenshotHelperScriptPath
+	"v0.9.1 Step 17: Hardcoded path to the PowerShell screenshot helper.
+	 Same convention as logFilePath (single-developer-laptop tool; one
+	 canonical install path; externalize to env-var when production
+	 packaging happens). Script source is scripts/screenshot-helper.ps1
+	 and uses System.Drawing for capture + Console OpenStandardOutput
+	 for binary PNG stdout."
+	^'C:\Users\ammaganyane\tm\tm-context\scripts\screenshot-helper.ps1'!
+
+pngExtentFromBytes: aByteArray
+	"v0.9.1 Step 17: Parse PNG IHDR chunk to extract width and height.
+	 PNG format:
+	   bytes 1-8   PNG magic 137 80 78 71 13 10 26 10 (\x89PNG\r\n\x1a\n)
+	   bytes 9-12  IHDR chunk length (BE uint32) = 13
+	   bytes 13-16 chunk type IHDR (ASCII bytes 73 72 68 82)
+	   bytes 17-20 width  (BE uint32)
+	   bytes 21-24 height (BE uint32)
+	 Returns Array with: width with: height. Returns #(0 0) on malformed
+	 input (too short or wrong magic) so the success response still goes
+	 out - X-VWBridge-Screenshot-Width/Height headers reflect 0/0 if PNG
+	 is corrupt, which is a useful signal rather than a hard failure."
+	| w h |
+	aByteArray size < 24 ifTrue: [^Array with: 0 with: 0].
+	(aByteArray at: 1) = 137 ifFalse: [^Array with: 0 with: 0].
+	w := ((aByteArray at: 17) bitShift: 24)
+		+ ((aByteArray at: 18) bitShift: 16)
+		+ ((aByteArray at: 19) bitShift: 8)
+		+ (aByteArray at: 20).
+	h := ((aByteArray at: 21) bitShift: 24)
+		+ ((aByteArray at: 22) bitShift: 16)
+		+ ((aByteArray at: 23) bitShift: 8)
+		+ (aByteArray at: 24).
+	^Array with: w with: h!
+
+captureScreenshotViaSubprocess: aSpec rect: aRect
+	"v0.9.1 Step 17: Production screen-capture via PowerShell + System.Drawing
+	 subprocess (per Oracle F3 verdict - Path B; Path A pixel-encoder DEAD).
+	 - aSpec: validated request dict (targetType, format, maxBytes, timeoutMs)
+	 - aRect: nil for screen target; window snapshot dict for window target
+	 Returns outcome Dictionary matching screenshotCaptureOverride shape so
+	 handleScreenshotBody: routes both paths identically.
+	   success keys: ok=true, pngBytes=ByteArray, width=Int, height=Int
+	   failure keys: ok=false, status=Int, error=String, message=String
+	 Pattern: OS.ExternalProcess defaultClass new (WinProcess on Windows) +
+	   lineEndTransparent (binary stdout safety - no CRLF mangling) +
+	   createInOutErrorPipes (drain stdout PNG + stderr diagnostics
+	   separately) + startProcess:arguments: (Array of ASCII validated
+	   strings). Args are validated INTs from VW side per Oracle PS-
+	   injection mitigation (NEVER concat user input into PS source - pass
+	   only mode + INT coords as separate argv entries). Standalone harness
+	   verification at Step 17 confirmed byte-faithful 594KB 2560x1440 PNG.
+	 v1: synchronous wait (no timeout enforcement); subprocess typically
+	 completes in <1s. Real timeout via poll+kill is a deferred improvement."
+	| helperPath argList proc stdoutBytes stderrText exitStatus extent result |
+	helperPath := self screenshotHelperScriptPath.
+	argList := Core.OrderedCollection new.
+	argList add: '-ExecutionPolicy'; add: 'Bypass'.
+	argList add: '-File'; add: helperPath.
+	aRect isNil
+		ifTrue: [
+			"screen target - PS computes from SystemInformation VirtualScreen"
+			argList add: '-Mode'; add: 'screen']
+		ifFalse: [
+			"window target - use the resolved rect from windowsSnapshotForWait shape"
+			| x y w h |
+			x := (aRect at: 'originX') asInteger.
+			y := (aRect at: 'originY') asInteger.
+			w := ((aRect at: 'cornerX') asInteger - x) max: 1.
+			h := ((aRect at: 'cornerY') asInteger - y) max: 1.
+			argList add: '-Mode'; add: 'window'.
+			argList add: '-X'; add: x printString.
+			argList add: '-Y'; add: y printString.
+			argList add: '-W'; add: w printString.
+			argList add: '-H'; add: h printString].
+	"Build and launch subprocess"
+	proc := [OS.ExternalProcess defaultClass new] on: self errorClass do: [:ex |
+		^self screenshotErrorWithCode: 'screenshot-capture-failed'
+			status: 500
+			message: 'cannot instantiate OS.ExternalProcess: ' , ex description].
+	[proc lineEndTransparent] on: self errorClass do: [:ex | nil].
+	[proc createInOutErrorPipes] on: self errorClass do: [:ex |
+		[proc release] on: self errorClass do: [:ex2 | nil].
+		^self screenshotErrorWithCode: 'screenshot-capture-failed'
+			status: 500
+			message: 'cannot create pipes: ' , ex description].
+	[proc startProcess: 'powershell.exe' arguments: argList asArray]
+		on: self errorClass do: [:ex |
+			[proc release] on: self errorClass do: [:ex2 | nil].
+			^self screenshotErrorWithCode: 'screenshot-capture-failed'
+				status: 500
+				message: 'cannot launch powershell.exe: ' , ex description].
+	"Wait for exit and drain pipes (synchronous; timeout enforcement deferred)"
+	[proc wait] on: self errorClass do: [:ex | nil].
+	stdoutBytes := [proc outputPipe upToEnd] on: self errorClass do: [:ex | ByteArray new].
+	stderrText := [proc errorPipe upToEnd] on: self errorClass do: [:ex | ''].
+	exitStatus := [proc exitStatus] on: self errorClass do: [:ex | -1].
+	[proc release] on: self errorClass do: [:ex | nil].
+	"Map outcome - non-zero exit OR empty stdout indicate subprocess failure"
+	exitStatus = 0 ifFalse: [
+		^self screenshotErrorWithCode: 'screenshot-capture-failed'
+			status: 500
+			message: 'powershell exit=' , exitStatus printString , '; stderr=' , stderrText asString].
+	stdoutBytes isEmpty ifTrue: [
+		^self screenshotErrorWithCode: 'screenshot-capture-failed'
+			status: 500
+			message: 'subprocess returned 0 bytes; stderr=' , stderrText asString].
+	"Success - normalize to ByteArray and parse PNG IHDR for extent headers"
+	(stdoutBytes isKindOf: ByteArray) ifFalse: [stdoutBytes := stdoutBytes asByteArray].
+	extent := self pngExtentFromBytes: stdoutBytes.
+	result := Core.Dictionary new.
+	result at: 'ok' put: true.
+	result at: 'pngBytes' put: stdoutBytes.
+	result at: 'width' put: (extent at: 1).
+	result at: 'height' put: (extent at: 2).
+	^result! !
 
 "v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
 Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
@@ -2514,3 +2634,5 @@ f == nil
 		f nextPutAll: VWBridge singleton token.
 		f close.
 		Transcript cr; show: 'Token written to .token: '; show: VWBridge singleton token; cr]!
+
+		
