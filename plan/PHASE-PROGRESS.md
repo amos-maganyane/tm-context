@@ -1,7 +1,7 @@
 ---
 title: Phase Progress Tracker
 purpose: Live cross-session view of project progress. Updated at each session EOD when a deliverable shifts state. Complements the per-session HANDOFF docs (point-in-time) and STRATEGIC-ASSESSMENT (framing doc, rewritten only at phase boundaries).
-last_updated: 2026-06-21 (session-20 EOD)
+last_updated: 2026-06-21 (session-21 EOD)
 ---
 
 # Phase Progress Tracker
@@ -14,28 +14,29 @@ This file is the **canonical cross-session view** of where each phase stands. Op
 
 ---
 
-## Quick status (session-20 EOD)
+## Quick status (session-21 EOD)
 
-- **Critical-path bottleneck**: NONE for the Phase-P track — **Phase P COMPLETE**. Next bottlenecks are Phase M (MCP for VW dev) or Phase E (Playwright SDK), which can now run in parallel.
-- **Most recent ship**: Phase P P7 (`INSTALL.md` at repo root, both install paths documented) + P8 (`GET /version` endpoint + `scripts/Build-Parcel.ps1` reproducible parcel rebuild + bridge bumped v0.9.1 → v0.10.0) — session-20, verified through 5-cycle Parcel-mode quality gate (mean 9.16s per cycle).
-- **Session-21 first action**: pick between Phase M MVP, Phase E SDK kickoff, stale-doc cleanup, or long-tail housekeeping. Phase P track has no remaining critical-path work.
-- **Phase P overall**: **100%** COMPLETE (P1+P2[all stages+QG]+P3+P4+P5+P6+P7+P8 SHIPPED).
-- **Bridge version**: v0.10.0 (was v0.9.1 through session-19).
-- **Token at EOD**: `3959514441929-808187` (Parcel-mode cycle 5).
-- **vwnt.exe**: PID 7588 (Parcel-mode gate cycle 5), started 6/21/2026 17:07:17. 9 vwnt.exe processes spawned across the session (5 wedge-recovery investigating compile-on-VWB.VWBridge + 1 dry-run + cycles 2-5 of the gate).
+- **Critical-path bottleneck**: NONE for Phase-P track (DONE s20). Phase M research+design v2 COMPLETE this session; implementation deferred to session-22 per user direction.
+- **Most recent ship**: Phase M v2 research+design (5 research docs + 1 design doc at `src/mcp-vw/` totaling ~3,200 lines / ~250 KB) + 3 wave-2 librarian raw outputs (2 preserved as `_librarian-*-raw.md` for cross-session reference) + 5 image probes (in `src/vw-bridge/probes/_probe-s21-*`) + POC results doc validating bridge can find 1,296 ApplicationModel-with-windowSpec UI classes via /eval. Design v2 user-approved at sign-off gate after empirical POC.
+- **Session-22 first action**: Phase M MVP implementation — 18 tools in TypeScript `@modelcontextprotocol/sdk ^1.29.0` per locked `design/architecture.md` v2; estimated ~3 days (Setup 0.5 + MVP 3 + auto-reg 0.5) to onboarding-developer milestone.
+- **Phase P overall**: 100% COMPLETE (unchanged from s20).
+- **Phase M overall**: ~25% (research+design v2 LOCKED; no code yet; bg_3fe35753 Pundle/Parcel/Store wave-2 librarian raw output preserved for s22 reference).
+- **Bridge version**: v0.10.0 (unchanged from s20).
+- **Token at EOD**: `3959514441929-808187` (unchanged from s20 — no vwnt.exe restart this session).
+- **vwnt.exe**: PID 7588 continuous from s20 cycle 5 (started 6/21/2026 17:07:17). Zero kill+restart cycles this session — all work via /eval probes (8 probes + 2 cleanup ops, all GREEN).
 
 ---
 
 ## Project goals progress (4 from STRATEGIC-ASSESSMENT)
 
-| # | Goal | Baseline (session-7) | session-13 | session-17 EOD | session-18 EOD | session-19 EOD | session-20 EOD | Δ since s19 |
-|---|---|---|---|---|---|---|---|---|
-| 1 | Bridge / eval server | ~70% (13 endpoints; /wait + /screenshot + /select + /doubleClick + /cell + /activate all missing) | ~90% (14 endpoints; /wait + /screenshot shipped) | ~90% (stable) | ~90% | ~90% | **~92%** (15 endpoints; /version added; /select etc. still Phase H deferred) | **+2%** |
-| 2 | Production-grade packaging (Phase P) | ~5% | ~25% | ~60% (P1+P2+P3+P4 SHIPPED, P5 designed) | ~80% (P5 SHIPPED) | ~90% (P6 SHIPPED) | **100% COMPLETE** (P7 INSTALL.md + P8 /version + Build-Parcel.ps1 SHIPPED; bridge v0.10.0; 5-cycle Parcel-mode gate GREEN) | **+10%** |
-| 3 | Test framework (Playwright) | ~0% | ~0% | ~0% | ~0% | ~0% | **~0%** (still 0 SDK code; UNBLOCKED — Phase P done) | 0% |
-| 4 | MCP server | 0% built | 0% | ~5% | ~5% | ~5% | **~5%** (no Phase M code yet; UNBLOCKED — Phase P done) | 0% |
+| # | Goal | Baseline (session-7) | session-13 | session-17 EOD | session-18 EOD | session-19 EOD | session-20 EOD | session-21 EOD | Δ since s20 |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | Bridge / eval server | ~70% | ~90% | ~90% | ~90% | ~90% | ~92% | **~92%** (unchanged — no bridge changes this session; Phase M v2 design confirmed zero bridge changes needed) | 0% |
+| 2 | Production-grade packaging (Phase P) | ~5% | ~25% | ~60% | ~80% | ~90% | **100% COMPLETE** | **100% COMPLETE** (unchanged) | 0% |
+| 3 | Test framework (Playwright) | ~0% | ~0% | ~0% | ~0% | ~0% | ~0% | **~0%** (still 0 SDK code; UNBLOCKED — Phase P done) | 0% |
+| 4 | MCP server | 0% built | 0% | ~5% | ~5% | ~5% | ~5% | **~25%** (Phase M v2 research+design LOCKED; 5 research docs + 1 design doc + 3 image probes + POC results; user-approved at sign-off; implementation deferred to s22) | **+20%** |
 
-Goal 2 (Packaging) absorbed session-20 — Phase P from 90% → **100% COMPLETE**. Goals 3 (Phase E) and 4 (Phase M) are now structurally unblocked: bridge is deployable to any developer machine via either FileIn or Parcel install, has documented install procedure, has /version endpoint for SDK version-pinning, and the parcel rebuild pipeline is reproducible.
+Goal 4 (MCP) absorbed session-21 — Phase M from ~5% → **~25%**. v2 design rejection at first sign-off triggered scope expansion: 8 new NATIVE UI-construction tools added (vw_create_class, vw_create_application_model, vw_create_window_spec, vw_create_dialog, vw_create_parcel, vw_define_action, vw_define_aspect, vw_get_widget_value). Tool surface 40→48; MVP 13→18; effort 7d→10d. Design empirically validated via POC probes (1,296 ApplicationModel subclasses with windowSpec reachable via /eval; canonical literal-array format confirmed on Browser.AbstractCodeModel).
 
 ---
 
@@ -49,7 +50,7 @@ Goal 2 (Packaging) absorbed session-20 — Phase P from 90% → **100% COMPLETE*
 | C — API freeze + OpenAPI | ~25% | ⚙️ partially subsumed | P7 (INSTALL.md) + P8 (`/version`) cover the core docs+version-pinning need; standalone OpenAPI deferred to post-P |
 | D — Auto-start | 100% | ✅ SUBSUMED by P5 | Designed session-17 via Oracle; SHIPPED session-18 (Start-VWBridge.ps1+bat) |
 | **P — Packaging** | **100%** | ✅ **COMPLETE** | P1+P2(S1+S2+S3+QG)+P3+P4+P5+P6+P7+P8 SHIPPED |
-| M — MCP for VW dev | ~5% | ⚙️ unblocked (next priority option) | Jasper 3-layer reference design captured s17; no code; bridge now fully deployable + documented |
+| **M — MCP for VW dev** | **~25%** | ⚙️ **research+design LOCKED** | v2 design at `src/mcp-vw/design/architecture.md` (656 lines, 45 KB): TypeScript `@modelcontextprotocol/sdk ^1.29.0` + stdio + 48 tools (MVP 18, V2 +13, V3+ +17) including 8 NATIVE UI-construction tools; effort ~10 days for full surface (~3 days for MVP); user-approved at sign-off; implementation deferred to s22 |
 | E — Playwright SDK + 3 tests | 0% | ⚙️ unblocked (next priority option, parallel with M) | Bridge fully deployable in 2 modes + /version for version-pinning; can start SDK any time |
 | G — CI pipeline | 0% | ⏳ gated on E | — |
 | H — Scale (all critical workflows) | 0% | ⏳ gated on G | — |
@@ -142,8 +143,7 @@ Phase P (100% COMPLETE)
 | **18** | 2026-06-21 | Phase P P5 SHIPPED (Start-VWBridge.ps1 + Start-VWBridge.bat via `vwnt.exe -filein` switch); 6 probes verified -filein syntax (AppDevGuide.pdf p36) + ImageConfigurationSystem allow-flag state + top-level `^` chunk semantics; 5-cycle quality gate GREEN (mean 9.11s/cycle); 3 new carry-forward (32-34); AGENTS.md cold-start path replaced | v0.9.1 | 7 pushed | P at ~80%, P6 next on critical path |
 | **19** | 2026-06-21 | **Phase P P6 SHIPPED (VWBridge.pcl 52KB binary parcel + VWBridge.pst companion + parcel-start.st + Start-VWBridge.ps1 -Mode FileIn\|Parcel); Cursor>>showWhile: monkey-patch + canonical parcelOutOn: pattern PROVEN; 24 probes + Oracle consult + research (pypdf VW docs + websearch); 5-cycle parcel-mode quality gate GREEN (mean 8.43s/cycle, faster than P5); 6 new carry-forward (35-40); 9 bridge recoveries during empirical investigation; VWBridge-Tests.pcl DEFERRED (wedged on 3-class build, not on critical path)** | **v0.9.1** | **5 pushed** | **P at ~90%, P7 (INSTALL.md) next** |
 | **20** | 2026-06-21 | **Phase P P7+P8 SHIPPED — Phase P COMPLETE. P7: INSTALL.md at repo root (~400 lines, both FileIn + Parcel paths + troubleshooting + uninstall). P8: GET /version endpoint (auth-exempt, 4-field JSON returning version + buildCommitSha + buildTimestamp + parcelMode); bridge bumped v0.9.1 → v0.10.0; class-side version + buildCommitSha/buildTimestamp/parcelMode accessors+setters; Start-VWBridge.ps1 /eval-injects all 3 build-info fields at cold-start in both modes (Get-GitHeadSha pure-PS helper reads .git/HEAD directly, no git CLI dependency); scripts/Build-Parcel.ps1 reproducible rebuild via Cursor monkey-patch + verbatim s19 parcel pattern; new VWBridge.pcl 53KB + VWBridge.pst 131KB ship-built; 5-cycle Parcel-mode quality gate GREEN (mean 9.16s); 2 new carry-forward (41-42 — compile-on-VWB.VWBridge wedge + ensure-block no-binding); 5 bridge recoveries investigating bake-metadata approach (abandoned for simpler design)** | **v0.10.0** | **TBD pushed** | **P at 100% COMPLETE; M or E next** |
-| _(21)_ | _(TBD)_ | _Phase M MVP OR Phase E SDK kickoff (parallel-eligible)_ | _(v0.10.x)_ | — | _Onboarding milestone advance_ |
-| _(future)_ | — | _Phase P COMPLETE (P7 + P8)_ | _(v0.10.0)_ | — | _Onboarding milestone unblocked_ |
+| **21** | 2026-06-21 | **Phase M v2 research+design LOCKED (implementation deferred to s22 per user direction). Pushed s20's 6 commits to origin/main (b9e5357..ff2ddb1). 5 research docs at src/mcp-vw/research/ (01-mcp-sdk.md SDK pick TypeScript ^1.29.0; 02-jasper-delta.md 33-tool Jasper-to-VW delta; 03-vw-specific-capabilities.md 12 VW-only MCP tools; 04-mcp-best-practices.md Claude Desktop MSIX-aware integration; 05-vw-native-development.md VW idioms) + design/architecture.md v2 (656 lines, 48 tools: MVP 18 / V2 +13 / V3+ +17, with 8 NATIVE UI-construction tools addressing user critique). 5 image probes (probe-1 class inventory, probe-2 namespace+WindowSpec API, probe-3 inheritance chains + canonical literal format DISCOVERY, POC-1+2+3 validating 1296 ApplicationModel-with-windowSpec UI classes reachable via /eval). 6 wave-2 librarians fired (3 wave-1 successful; 3 wave-2 first fire lost to model-availability, re-fired successfully — 2 returned with content, third also returned at 22m). 2 librarian raw outputs preserved as _librarian-*-raw.md (78KB + 67KB) for s22 reference. Design v1 REJECTED at first sign-off (too eval-centric); v2 user-APPROVED after POC empirical proof. Memory MCP: +5 entities (Session-21, Phase-M-v1-shipped, Phase-M-v2-in-progress, VW-spec-literal-format-pattern, wave-2-librarian-model-failure-and-recovery) + 10 relations + ~40 observations. Zero bridge changes; zero new carry-forward constraints. No vwnt.exe restart this session.** | **v0.10.0 (unchanged)** | **TBD committed** | **Phase M ~25%; MVP code defer to s22** |
 | _(future)_ | — | _Phase M ship (MCP for VW dev)_ | — | — | _Onboarding developer milestone_ |
 | _(future)_ | — | _Phase E ship (first green Playwright test)_ | — | — | _Test framework starts_ |
 | _(future)_ | — | _Phase G + H ship_ | — | — | _Test framework at scale_ |
@@ -163,6 +163,7 @@ Phase P (100% COMPLETE)
 | session-18 | 34 | Dialog asymmetric setter/getter (32), `-filein` switch + ImageConfigurationSystem allow-flags verified (33), `-err` Runtime-Packager-only (34) |
 | session-19 | 40 | Cursor>>showWhile: wedge + monkey-patch (35), createParcelNamed: returns empty parcel (36), parcelOutOn:withSource: is Filename arg (37), removeParcelNamed: raises Notification (38), CodeWriter is binary write engine (39), parcel write embeds .pst path reference (40) |
 | **session-20** | **42** | **compile: on VWB.VWBridge class wedges bridge even with Cursor monkey-patch (41), ensure: block referencing VWB.VWBridge after parcelOutOn: raises "no binding" (42)** |
+| **session-21** | **42** | None — Phase M v2 research used existing constraints (#15, #16, #18, #20, #28, #38, #41) without surfacing new ones. Image probes confirmed empirical surface (1908 ApplicationModel subclasses; 1296 with windowSpec; 312 namespaces). |
 
 Full carry-forward catalog: [`knowledge/vw-image-api-contract.md`](../knowledge/vw-image-api-contract.md).
 
@@ -178,6 +179,7 @@ Full carry-forward catalog: [`knowledge/vw-image-api-contract.md`](../knowledge/
 | session-18 | 24 | 42 | No new entities; +~20 observations across Phase-P-P5-Oracle-recommendation (probe results + 5-cycle gate), VW-image-storedev64 (ImageConfigurationSystem + allow-flags + asymmetric Dialog selectors + PID rotation), Phase-P-progress (P5 SHIPPED), ammaganyane (decisions) |
 | session-19 | 27 | 47 | +3 entities: Session-19-2026-06-21, parcelOutOn-wedges-bridge-via-showWhile (code-bug), Cursor-showWhile-monkeypatch-technique (technique), Phase-P-P6-shipped (milestone); +5 relations: discovers/delivers/advances/enables/resolves; +~40 observations across new + existing entities (VW-image-storedev64 parcel API, Phase-P-progress P6 SHIPPED, etc.) |
 | **session-20** | **30** | **52** | **+3 entities: Session-20-2026-06-21, Phase-P-P7-P8-shipped (milestone — Phase P COMPLETE), compile-on-VWB-VWBridge-wedge (code-bug); +5 relations: Session-20 delivers Phase-P-P7-P8-shipped, Phase-P-P7-P8-shipped completes Phase-P-progress, compile-wedge affects parcel-build, Session-20 discovers compile-wedge, Phase-P-P7-P8-shipped advances tm-context-vw-bridge; +~25 observations across new + existing entities (VW-image-storedev64 compile wedge + ensure-block no-binding, Phase-P-progress P7+P8 SHIPPED, ammaganyane session-20 decisions)** |
+| **session-21** | **35** | **62** | **+5 entities: Session-21-2026-06-21, Phase-M-research-v1-shipped (milestone, rejected at sign-off), Phase-M-research-v2-in-progress (milestone, user-approved), VW-spec-literal-format-pattern (technique — canonical windowSpec literal array discovery), wave-2-librarian-model-failure-and-recovery (session-event); +10 relations capturing v1→v2 supersession, design discovery, MAS UI surface validation; +~40 observations across new + existing entities (ammaganyane s21 direction + design critique, tm-context-vw-bridge Phase M v2 design, VW-image-storedev64 spec hierarchy + ApplicationModel hooks + canonical windowSpec literal)** |
 
 ---
 
