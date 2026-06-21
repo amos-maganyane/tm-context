@@ -1,27 +1,46 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Auto-start wrapper for the VW Bridge (Phase P P5).
+    Auto-start wrapper for the VW Bridge (Phase P P5 + P6).
 
 .DESCRIPTION
-    Launches vwnt.exe with the MAS storedev64.im image and uses the documented
-    VW image-level -filein switch (AppDevGuide.pdf p36) to feed src/vw-bridge/load.st
-    at image-startup time. Wraps load.st into a single chunk (load body + CR-LF !
-    CR-LF) so the chunk-file-in parser accepts it as one do-it expression.
+    Launches vwnt.exe with the MAS storedev64.im image and uses documented
+    VW image-level command-line switches (AppDevGuide.pdf p36) to install + start
+    the bridge at image-startup time.
 
-    Replaces the AGENTS.md cold-start exception that previously required pasting
-    load.st into a VW Workspace by hand.
+    Two modes:
+      -Mode FileIn  (default, P5 path): -filein chunk-wrapped load.st orchestrates
+                    file-in of 5 source files + VWB.VWBridge start + .token write.
+      -Mode Parcel  (P6 path): -pcl VWBridge.pcl loads the binary parcel (VWB
+                    namespace + VWBridge class + SimpleDialog override), then
+                    -filein chunk-wrapped parcel-start.st calls VWB.VWBridge start
+                    + .token write. AppDevGuide.pdf p36 confirms left-to-right
+                    switch ordering, so -pcl resolves before -filein executes.
 
     Per Oracle Path 4 design (memory entity Phase-P-P5-Oracle-recommendation,
-    session-17), verified empirically session-18:
+    session-17), verified through 5-cycle quality gate session-18:
       - VW 9.3.1 AppDevGuide.pdf p36 documents -filein verbatim.
       - allowFilein=true in this MAS image (Core.ImageConfigurationSystem probe).
       - Top-level ^ in chunk file-in is silently consumed (probe D session-18).
-      - load.st contains zero '!' chars (preflight asserts).
+      - source file contains zero '!' chars (preflight asserts).
+
+    Phase P P6 (session-19) added the Parcel mode after empirical resolution of
+    the headless parcel-build path (Cursor>>showWhile: monkey-patch + canonical
+    parcelOutOn:withSource:hideOnLoad:republish:backup: with Filename source arg).
+
+.PARAMETER Mode
+    FileIn (default) or Parcel. FileIn uses the P5 source-load orchestration via
+    load.st. Parcel uses the P6 binary parcel via VWBridge.pcl + post-load start
+    script (parcel-start.st).
+
+.PARAMETER Parcel
+    Path to the .pcl file (Parcel mode only). Defaults to
+    $VW_BRIDGE_HOME/parcels/VWBridge.pcl.
 
 .PARAMETER HealthPollTimeoutSec
     How long to wait for /health to respond 200 after launch. Default 90s -
-    a cold image-load + file-in of 5 source files takes ~30-60s on this machine.
+    a cold image-load + parcel-load (or file-in of 5 sources) takes <10s on
+    this machine per s18 quality gate.
 
 .PARAMETER HealthPollIntervalMs
     Poll interval for /health. Default 500ms.
@@ -32,7 +51,7 @@
 
 .PARAMETER KillExisting
     If vwnt.exe is already running, kill it first before launching. Required
-    for the P5 quality gate (5 cold-start cycles). Without this, the wrapper
+    for the P5/P6 quality gate (5 cold-start cycles). Without this, the wrapper
     is idempotent - it exits 0 if /health is already responding.
 
 .PARAMETER SkipNativeDialogToggle
@@ -42,25 +61,28 @@
 
 .EXAMPLE
     .\Start-VWBridge.ps1
-    Default: idempotent launch. If /health 200, exit 0. Else launch and verify.
+    Default: idempotent FileIn-mode launch. If /health 200, exit 0. Else launch.
 
 .EXAMPLE
-    .\Start-VWBridge.ps1 -KillExisting
-    Quality gate cycle: kill any running vwnt.exe, launch, verify /health,
-    verify .token rotated, toggle useNativeDialogs.
+    .\Start-VWBridge.ps1 -Mode Parcel -KillExisting
+    Quality-gate cycle in parcel mode: kill any running vwnt.exe, launch with
+    -pcl + post-load start, verify /health + .token rotation + Dialog toggle.
 
 .NOTES
     Exit codes:
       0 success (or bridge already up)
       2 VW_BRIDGE_HOME env var missing
-      3 required file missing (vwnt.exe / storedev64.im / load.st)
-      4 load.st contains '!' character (would break chunk-wrap)
+      3 required file missing (vwnt.exe / image / source script / parcel)
+      4 source script contains '!' character (would break chunk-wrap)
       5 /health did not respond within timeout
-      6 .token did not rotate (load.st step 5 failed) or .token missing
+      6 .token did not rotate (start-script step failed) or .token missing
       7 launch failed before vwnt.exe started
 #>
 [CmdletBinding()]
 param(
+    [ValidateSet('FileIn', 'Parcel')]
+    [string]$Mode = 'FileIn',
+    [string]$Parcel,
     [int]$HealthPollTimeoutSec = 90,
     [int]$HealthPollIntervalMs = 500,
     [switch]$NoWait,
@@ -112,23 +134,40 @@ $env:VW_BRIDGE_HOME = $bridgeHome
 $vwnt     = 'C:\visualworks931\bin\win64\vwnt.exe'
 $image    = 'C:\visualworks931\image\storedev64.im'
 $imageDir = 'C:\visualworks931\image'
-$loadSt   = Join-Path $bridgeHome 'load.st'
+
+# Mode-aware source-script + parcel resolution.
+# FileIn mode: load.st orchestrates file-in of 5 sources + start + token write.
+# Parcel mode: parcel-start.st only does start + token write (parcel adds classes via -pcl).
+if ($Mode -eq 'FileIn') {
+    $sourceSt = Join-Path $bridgeHome 'load.st'
+    $parcelPath = $null
+} else {
+    $sourceSt = Join-Path $bridgeHome 'parcel-start.st'
+    if ($Parcel) {
+        $parcelPath = $Parcel
+    } else {
+        $parcelPath = Join-Path $bridgeHome 'parcels\VWBridge.pcl'
+    }
+}
 $tokenFile = Join-Path $bridgeHome '.token'
 
-foreach ($path in @($vwnt, $image, $loadSt)) {
+$requiredFiles = @($vwnt, $image, $sourceSt)
+if ($Mode -eq 'Parcel') { $requiredFiles += $parcelPath }
+foreach ($path in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $path)) {
         Write-Bad "Required file not found: $path"
         exit 3
     }
 }
-Write-Section "preflight OK (VW_BRIDGE_HOME=$bridgeHome)"
+Write-Section "preflight OK (VW_BRIDGE_HOME=$bridgeHome, Mode=$Mode)"
+if ($Mode -eq 'Parcel') { Write-Section "  parcel: $parcelPath" }
 
-# --- (1b) assert load.st has no '!' (would break the chunk-wrap) ---
-$loadStBytes = [System.IO.File]::ReadAllBytes($loadSt)
-$bangCount = ($loadStBytes | Where-Object { $_ -eq 0x21 } | Measure-Object).Count
+# --- (1b) assert source script has no '!' (would break the chunk-wrap) ---
+$sourceBytes = [System.IO.File]::ReadAllBytes($sourceSt)
+$bangCount = ($sourceBytes | Where-Object { $_ -eq 0x21 } | Measure-Object).Count
 if ($bangCount -gt 0) {
-    Write-Bad "load.st contains $bangCount '!' character(s); chunk-wrapping with '\r\n!\r\n' would split the chunk early."
-    Write-Bad "Rewrite '!' out of load.st (api-contract.md: chunk parser splits at '!' even inside comments)."
+    Write-Bad "$sourceSt contains $bangCount '!' character(s); chunk-wrapping with '\r\n!\r\n' would split the chunk early."
+    Write-Bad "Rewrite '!' out (api-contract.md: chunk parser splits at '!' even inside comments)."
     exit 4
 }
 
@@ -165,21 +204,22 @@ if ($KillExisting) {
 
 #endregion
 
-#region --- (4) generate startup chunk: load.st body + CR-LF ! CR-LF ---
+#region --- (4) generate startup chunk: source body + CR-LF ! CR-LF ---
 
 $generatedDir = Join-Path $bridgeHome '.generated'
 if (-not (Test-Path -LiteralPath $generatedDir)) {
     $null = New-Item -ItemType Directory -Path $generatedDir
 }
-$generatedChunk = Join-Path $generatedDir 'load-startup.st'
+$generatedChunkName = if ($Mode -eq 'FileIn') { 'load-startup.st' } else { 'parcel-start-startup.st' }
+$generatedChunk = Join-Path $generatedDir $generatedChunkName
 
-# Read load.st as text. load.st is LF-only ASCII; ReadAllText preserves bytes as-is.
-$body = [System.IO.File]::ReadAllText($loadSt, [System.Text.Encoding]::ASCII)
+# Read source script as text. Source files are LF-only ASCII; ReadAllText preserves bytes as-is.
+$body = [System.IO.File]::ReadAllText($sourceSt, [System.Text.Encoding]::ASCII)
 $wrappedContent = $body + "`r`n!`r`n"
 
 # Write as ASCII (no BOM) - chunk parser is byte-oriented and won't accept UTF-8 BOM.
 [System.IO.File]::WriteAllText($generatedChunk, $wrappedContent, [System.Text.Encoding]::ASCII)
-Write-Section "generated $generatedChunk ($($wrappedContent.Length) chars)"
+Write-Section "generated $generatedChunk ($($wrappedContent.Length) chars from $sourceSt)"
 
 #endregion
 
@@ -204,7 +244,14 @@ if (Test-Path -LiteralPath $errFile) {
 # Per AppDevGuide.pdf p35: syntax is <oe> [oe-switches] <image-name> [image-switches].
 # Image name MUST precede image switches. -err is Runtime Packager addition (p481)
 # - works in this image but treat its functionality as best-effort.
-$arguments = @($image, '-filein', $generatedChunk, '-err', $errFile)
+# In Parcel mode, -pcl precedes -filein per p470 left-to-right semantics:
+# parcel loads first (adds VWB namespace + classes + extension), then -filein
+# executes parcel-start.st which calls VWB.VWBridge start + writes .token.
+$arguments = @($image)
+if ($Mode -eq 'Parcel') {
+    $arguments += '-pcl', $parcelPath
+}
+$arguments += '-filein', $generatedChunk, '-err', $errFile
 Write-Section "launching: $vwnt $($arguments -join ' ')"
 Write-Section "workdir:   $imageDir"
 
