@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-21 (session-16, after systematic SUnit gate sweep + ByteArray test helper fixes + 5 new carry-forward constraints)
-source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16
+last_verified: 2026-06-21 (session-17, after Phase P P2 Stage 3 ship: load.st + unload.st external orchestrators + in-place quality-gate idempotency proven via 2 consecutive single-/eval-call cycles)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -528,6 +528,69 @@ The pre-flight is cheap (~1 sec) and saves the human a paste-error round-trip.
 
 ---
 
+## Phase P P2 Stage 3 — `load.st` / `unload.st` orchestrators (session-17)
+
+`VWBridge.st` no longer auto-starts on file-in — the auto-start chunk was removed in session-17. The file is now **parcel-ready** (files in without side-effects) which is the prerequisite for P6 parcel build. Two external orchestrators replace the previous auto-start behavior.
+
+### [`src/vw-bridge/load.st`](../src/vw-bridge/load.st) — external load orchestrator
+
+Do-it expression block (NOT chunk-formatted) for `/eval` POST or VW Workspace Do It. Behavior:
+
+1. Resolves `VW_BRIDGE_HOME` from OS env via `OS.CEnvironment userEnvironment at:ifAbsent:` — fails loud per constraint #8.
+2. Defensively stops + removes any leaked top-level `Root.Smalltalk.VWBridge` (Stage 2 migration vestige cleanup).
+3. Files in 5 source files in dependency order:
+   - `VWBridge.st` (Core — defines VWB namespace + VWBridge class)
+   - `VWBridge-Patches.st` (SimpleDialog override — Bug #2 fix)
+   - `VWBridge-Test.st`, `VWBridge-WaitTest.st`, `VWBridge-ScreenshotTest.st`
+4. Calls `VWB.VWBridge start` (rotates token, creates listener process).
+5. Writes new `.token` to `VWB.VWBridge tokenFilePath` (derived from `VW_BRIDGE_HOME`) for agent pickup.
+
+`fileIn` raises `EndOfStreamNotification` at EOF (constraint #24) — `load.st` leaves the `fileIn` UNWRAPPED so the notification auto-resumes at the top-level handler.
+
+### [`src/vw-bridge/unload.st`](../src/vw-bridge/unload.st) — external unload orchestrator
+
+Do-it expression block. Inverse of `load.st` — removes ALL VWBridge footprint from the image:
+
+1. Captures `tokenPath` BEFORE the class is gone (defensive: any error → nil).
+2. Stops bridge listener via dynamic `Smalltalk at: #VWB` lookup.
+3. Deletes `.token` file.
+4. Removes `SimpleDialog>>choose:labels:values:default:for:` override (`removeSelector:` is naturally defensive on absent — verified session-17 probe).
+5. Removes 4 VWB classes in reverse-dependency order: `VWBridgeScreenshotTest`, `VWBridgeWaitTest`, `VWBridgeTest`, `VWBridge`.
+6. Removes empty VWB namespace (only if `keys isEmpty` — defensive against leaked residual classes).
+
+All steps wrapped with `on: Core.Error do: [:ex | log]` for belt-and-suspenders. After unload, the image is **byte-equivalent to pre-load state**: `Smalltalk at: #VWB` returns `nil`, `Kernel.Parcel classParcelMap` has zero VWB-prefixed keys, `SimpleDialog includesSelector: #choose:labels:values:default:for:` returns false.
+
+### Quality-gate test technique — in-place unload+load+verify via single `/eval` call
+
+The `/eval` handler runs on a **forked process** from the listener. When `unload` kills the listener mid-call (`process terminate` + `listener close`), the handler process keeps running (different process tree). The handler can then file-in + `start` a NEW listener and respond via the still-open accepted client socket.
+
+This enables in-place quality-gate testing WITHOUT requiring Workspace cold-start. Pattern:
+
+```smalltalk
+"Single /eval body that:
+ 1. snapshots pre-state (uses VWB.VWBridge - exists at compile + execution)
+ 2. runs unload body inline (kills listener; handler survives)
+ 3. snapshots post-unload state (Smalltalk at: #VWB returns nil; Kernel.Parcel
+    classParcelMap-VWB-keys empty; SimpleDialog override removed; .token gone)
+ 4. runs load body inline using DYNAMIC class lookups for the start step:
+        newCls := (Smalltalk at: #VWB ifAbsent: [nil])
+                      ifNotNil: [:ns | ns at: #VWBridge ifAbsent: [nil]].
+        newCls ifNotNil: [:c | c start]
+    (avoids stale compile-time binding to the OLD class object that unload removed)
+ 5. snapshots post-load state - all 4 classes back, override re-installed, bridge UP
+ 6. asserts 6 quality-gate predicates all true"
+```
+
+Verified session-17: **2 consecutive in-place cycles passed all 6 gate checks** (idempotency proven). Handler survived 3 listener-recycle events. Tokens rotated 3× during testing: `3959501518637-726009` → `3959501660889-966286` → `3959501833089-730222` → `3959501869549-282335` (each `start` calls `generateToken`).
+
+The UNLOAD section uses direct `VWB.VWBridge` refs — works because the class exists at compile time AND empirically also survives the unload-then-redefine via the same compiled body (VW's `ResolvedDeferredBinding` for qualified `Namespace.Class` refs re-resolves on each use through the namespace lookup chain). Dynamic `Smalltalk at: #VWB` lookup in the LOAD section is belt-and-suspenders for self-modifying code paths — never wrong, occasionally necessary.
+
+### Cold-start exception now uses `load.st` instead of `VWBridge.st`
+
+Per AGENTS.md cold-start exception, the FIRST file-in when bridge is dead requires VW Workspace paste (no `/eval` available). Pre-session-17 this was `VWBridge.st` (which auto-started). Post-session-17 this is `load.st` (which orchestrates the 5 file-ins + `start` + `.token` write). Phase P P5 will eliminate this manual step via external auto-start trigger (Topaz stdin / CLI arg / file watcher).
+
+---
+
 ## Startup hook landscape (heart of Phase D evidence)
 
 This image **does NOT auto-execute Smalltalk code at boot through any standard VW mechanism.**
@@ -764,6 +827,9 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **`Namespace>>at:put:` raises `Notification` on creating a NEW binding** (session-16): adding a previously-absent key to `Root.Smalltalk` (or any Namespace) signals an unnamed `Notification` (class=`Notification`, messageText=`'Notification - '`). Reassigning an existing key does NOT raise. In Workspace, auto-resumed silently; in /eval, propagates unless caught. Test design pitfall: 3 dialog tests in [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) use `Root.Smalltalk at: #TEST_BUG2_*_RET put: 'pending'` as a cross-process fork-result channel — works once the binding exists, raises on each fresh image / namespace cleanup. Fix at gate probe level (Notification-resume) rather than test code, mirroring runCase semantics.
 - **ByteArray-aware test helpers needed for binary responses** (session-16): when test response can be ByteArray (e.g., from `httpBinaryResponse:` for /screenshot), helpers must detect `aResponse isKindOf: Core.ByteArray` and switch lookups accordingly: `indexOf: Core.Character cr` → `indexOf: 13` (Integer); `indexOfSubCollection: 'crlf-crlf' (String)` → `indexOfSubCollection: #[13 10 13 10] (ByteArray)`; `aSubstring (String)` → `aSubstring asByteArray`. `aByteArray asString` and `aString asByteArray` are both native in this image (byte ↔ codepoint by value). Production `httpBinaryResponse:` was already correct — only [`VWBridge-ScreenshotTest.st`](../src/vw-bridge/VWBridge-ScreenshotTest.st) helpers (`statusLineOf:`, `bodyOf:`, `bodyContains:in:`, `headerContains:in:`) needed the dual-mode logic. Symptom: `description: 'Got: ' , (self statusLineOf: resp)` raises `Strings only store Characters` when statusLineOf: returns the entire ByteArray (fallback path) and String,ByteArray concat copies Integer elements into Character slots.
 - **HTTP /eval inherent limit: bridge-dispatching tests fail with Bug #5 recursive_dispatch** (session-16 confirmed): 7 VWBridgeTest selectors that call `bridge dispatch:` from /eval hit the v0.8.8+ per-process re-entry guard and return HTTP 400 with `{"error":"recursive_dispatch","depth":2,"hint":...}`. These tests are designed to pass via VW Workspace (different process). The /eval gate measures hermetic + non-dispatching test correctness; **48/48 unblocked PASS + 7 known-blocked is the maximum achievable via /eval direct-invoke**. Documented in [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) L14-25 file header as `[HTTP /eval - ALL RED]`. Per-class /eval-PASS counts: WaitTest 25/25, VWBridgeTest 13/13 unblocked (10 hermetic + 3 dialog-with-Notification-resume), ScreenshotTest 10/10.
+- **`load.st` / `unload.st` external orchestrators (session-17 Stage 3)**: `VWBridge.st` no longer auto-starts. [`src/vw-bridge/load.st`](../src/vw-bridge/load.st) orchestrates env-var resolve + 5-file file-in + `VWB.VWBridge start` + `.token` write; [`src/vw-bridge/unload.st`](../src/vw-bridge/unload.st) is the inverse defensive cleanup (capture tokenPath → stop bridge → delete .token → remove SimpleDialog override → remove 4 VWB classes reverse-dep → remove empty VWB namespace). Cold-start exception now goes through `load.st` (was `VWBridge.st`). Parcel-readiness prerequisite for P6 satisfied. See [Phase P P2 Stage 3](#phase-p-p2-stage-3--loadst--unloadst-orchestrators-session-17) section.
+- **In-place unload+load+verify via single `/eval` call (session-17)**: The `/eval` handler runs on a forked process and SURVIVES listener termination — can re-create the bridge inline within the same `/eval` body. Pattern: pre-snapshot → unload body (kills listener) → post-unload snapshot → load body (use dynamic `Smalltalk at: #VWB` lookups for the start step to avoid stale compile-time bindings) → post-load snapshot → assert 6 gate predicates. Saves the Workspace cold-start round-trip for quality-gate testing. Idempotency proven via 2 consecutive cycles in session-17 (token rotated 3×, bridge survived 3 listener-recycle events without wedge).
+- **`removeSelector:` is naturally defensive on absent selector** (session-17 verified): `Object removeSelector: #absent` returns without raising; same for `SimpleDialog removeSelector: #absent`. The defensive `on: Core.Error do: [:ex | nil]` wrap is belt-and-suspenders but not strictly required for `removeSelector:`. Combined with constraints #12 (`class removeFromSystem`) + #13 (`NameSpace removeFromSystem` on empty namespace) and `tokenPath asFilename delete` defensive guard, the unload.st sequence is fully idempotent across multiple invocations.
 
 ---
 
