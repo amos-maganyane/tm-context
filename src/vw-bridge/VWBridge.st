@@ -618,14 +618,24 @@ windowSummaries
 	mgr := self globalNamed: #ScheduledControllers.
 	mgr == nil ifTrue: [^result].
 	([mgr scheduledControllers] on: err do: [:ex | #()]) do: [:ctrl |
-		| d view app |
+		| d view app bx |
 		d := Core.Dictionary new.
 		view := [ctrl view] on: err do: [:ex | nil].
 		app := self applicationFor: ctrl.
 		d at: 'title' put: ([view label asString] on: err do: [:ex | nil]).
 		d at: 'viewClass' put: (view == nil ifTrue: [nil] ifFalse: [view class name asString]).
 		d at: 'appClass' put: (app == nil ifTrue: [nil] ifFalse: [app class name asString]).
-		d at: 'bounds' put: ([view displayBox printString] on: err do: [:ex | nil]).
+		"v0.9.1 Step 19: also expose origin and corner as integer fields so
+		 /screenshot window targets (which call captureScreenshotViaSubprocess:
+		 rect: with this dict) can extract a Rectangle without parsing the
+		 bounds printString. Keeps the original bounds printString field for
+		 backward compatibility with /windows JSON consumers (additive only)."
+		bx := view == nil ifTrue: [nil] ifFalse: [[view displayBox] on: err do: [:ex | nil]].
+		d at: 'bounds' put: (bx == nil ifTrue: [nil] ifFalse: [bx printString]).
+		d at: 'originX' put: (bx == nil ifTrue: [nil] ifFalse: [[bx origin x] on: err do: [:ex | nil]]).
+		d at: 'originY' put: (bx == nil ifTrue: [nil] ifFalse: [[bx origin y] on: err do: [:ex | nil]]).
+		d at: 'cornerX' put: (bx == nil ifTrue: [nil] ifFalse: [[bx corner x] on: err do: [:ex | nil]]).
+		d at: 'cornerY' put: (bx == nil ifTrue: [nil] ifFalse: [[bx corner y] on: err do: [:ex | nil]]).
 		result add: d].
 	^result!
 
