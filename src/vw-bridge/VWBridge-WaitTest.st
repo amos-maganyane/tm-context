@@ -46,7 +46,7 @@ Smalltalk.VWB defineClass: #VWBridgeWaitTest
 
 setUp
 	"Capture singleton + build authorized headers for the current token."
-	bridge := VWBridge singleton.
+	bridge := VWB.VWBridge singleton.
 	authHeaders := Core.Dictionary new.
 	authHeaders at: 'Authorization' put: 'Bearer ' , bridge token!
 

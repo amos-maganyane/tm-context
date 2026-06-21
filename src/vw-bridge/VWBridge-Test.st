@@ -15,7 +15,7 @@
    POST http://127.0.0.1:9876/eval  with body  'VWBridgeTest suite run'
    --> tests fail clean, listener stays alive (was image-killing pre-v0.8.8)
 
- Why: these tests dispatch against VWBridge singleton synchronously. When
+ Why: these tests dispatch against VWB.VWBridge singleton synchronously. When
  they're invoked from /eval, that runs on the bridge's own serve process,
  and the recursive bridge dispatch: from within a serve-process handler
  hits the v0.8.8 per-process re-entry guard and returns 400. Pre-v0.8.8 it
@@ -25,7 +25,7 @@
  ============================================================================
 
  Design notes:
- - Tests dispatch directly against VWBridge singleton (no HTTP listener
+ - Tests dispatch directly against VWB.VWBridge singleton (no HTTP listener
    round-trip required), so they run on the in-image SUnit process and are
    independent of network state or port availability.
  - setUp grabs the live token from the singleton, so tests stay valid
@@ -47,7 +47,7 @@ Smalltalk.VWB defineClass: #VWBridgeTest
 
 setUp
 	"Capture singleton + build authorized headers for the current token."
-	bridge := VWBridge singleton.
+	bridge := VWB.VWBridge singleton.
 	authHeaders := Core.Dictionary new.
 	authHeaders at: 'Authorization' put: 'Bearer ' , bridge token!
 
@@ -315,10 +315,10 @@ testVwBridgeHomeOverrideTakesPriority
 	"v0.9.2 Phase P P1: vwBridgeHomeOverride: takes priority over the
 	 VW_BRIDGE_HOME env var. Cleared in ensure: block to keep the test
 	 hermetic from the next test."
-	[VWBridge vwBridgeHomeOverride: 'C:\test\override-wins'.
-	 self assert: VWBridge vwBridgeHome = 'C:\test\override-wins'
+	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\override-wins'.
+	 self assert: VWB.VWBridge vwBridgeHome = 'C:\test\override-wins'
 		description: 'vwBridgeHome should return override when set']
-		ensure: [VWBridge clearVwBridgeHomeOverride]!
+		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
 testClearVwBridgeHomeOverrideRestoresEnvLookup
 	"v0.9.2 Phase P P1: clearVwBridgeHomeOverride drops the override and
@@ -327,33 +327,33 @@ testClearVwBridgeHomeOverrideRestoresEnvLookup
 	 vwBridgeHome no longer returns the fake value (it returns the env
 	 var, OR raises if env var is unset - both pass the deny: check)."
 	| afterClear |
-	[VWBridge vwBridgeHomeOverride: 'C:\test\should-be-cleared'.
-	 self assert: VWBridge vwBridgeHome = 'C:\test\should-be-cleared'
+	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\should-be-cleared'.
+	 self assert: VWB.VWBridge vwBridgeHome = 'C:\test\should-be-cleared'
 		description: 'sanity check: override should be active'.
-	 VWBridge clearVwBridgeHomeOverride.
-	 afterClear := [VWBridge vwBridgeHome] on: Error do: [:ex | nil].
+	 VWB.VWBridge clearVwBridgeHomeOverride.
+	 afterClear := [VWB.VWBridge vwBridgeHome] on: Error do: [:ex | nil].
 	 self deny: afterClear = 'C:\test\should-be-cleared'
 		description: 'after clear, vwBridgeHome should not return the cleared override value']
-		ensure: [VWBridge clearVwBridgeHomeOverride]!
+		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
 testTokenFilePathDerivesFromVwBridgeHome
 	"v0.9.2 Phase P P1: tokenFilePath returns vwBridgeHome with .token
 	 appended via backslash. Hermetic via override seam."
-	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
-	 self assert: VWBridge tokenFilePath = 'C:\test\install\.token'
+	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWB.VWBridge tokenFilePath = 'C:\test\install\.token'
 		description: 'tokenFilePath should be vwBridgeHome , backslash , .token']
-		ensure: [VWBridge clearVwBridgeHomeOverride]!
+		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
 testLogFilePathDerivesFromVwBridgeHome
 	"v0.9.2 Phase P P1: logFilePath returns vwBridgeHome with vw-bridge.log
 	 appended via backslash. Both class-side and instance-side return the
 	 same path, confirming instance delegation works."
-	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
-	 self assert: VWBridge logFilePath = 'C:\test\install\vw-bridge.log'
+	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWB.VWBridge logFilePath = 'C:\test\install\vw-bridge.log'
 		description: 'class-side logFilePath should be vwBridgeHome , backslash , vw-bridge.log'.
-	 self assert: VWBridge singleton logFilePath = 'C:\test\install\vw-bridge.log'
+	 self assert: VWB.VWBridge singleton logFilePath = 'C:\test\install\vw-bridge.log'
 		description: 'instance-side logFilePath should delegate to class-side']
-		ensure: [VWBridge clearVwBridgeHomeOverride]!
+		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
 testScreenshotHelperScriptPathDerivesFromVwBridgeHome
 	"v0.9.2 Phase P P3: screenshotHelperScriptPath returns vwBridgeHome
@@ -361,9 +361,9 @@ testScreenshotHelperScriptPathDerivesFromVwBridgeHome
 	 class-side and instance-side return the same path. P3 relocated the
 	 helper from repo-root scripts/ to vwBridgeHome/scripts/ so a single
 	 env var pins the entire install."
-	[VWBridge vwBridgeHomeOverride: 'C:\test\install'.
-	 self assert: VWBridge screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
+	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\install'.
+	 self assert: VWB.VWBridge screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
 		description: 'class-side screenshotHelperScriptPath should derive from override path'.
-	 self assert: VWBridge singleton screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
+	 self assert: VWB.VWBridge singleton screenshotHelperScriptPath = 'C:\test\install\scripts\screenshot-helper.ps1'
 		description: 'instance-side screenshotHelperScriptPath should delegate to class-side']
-		ensure: [VWBridge clearVwBridgeHomeOverride]! !
+		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]! !
