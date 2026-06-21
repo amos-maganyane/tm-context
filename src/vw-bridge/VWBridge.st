@@ -32,8 +32,13 @@
  the UI. See plan/PLAN-PHASE-F-SCREENSHOT.md.
  v0.9.2 Phase P P2 Stage 2 (session-14): namespace migration - class now
  lives at Root.VWB.VWBridge (was Root.Smalltalk.VWBridge top-level). Test
- classes also under Root.VWB. Auto-start chunk defensively stops and
- removes old top-level classes if present (idempotent cleanup)."
+ classes also under Root.VWB.
+ v0.9.2 Phase P P2 Stage 3 (session-17): auto-start chunk REMOVED - this
+ file is now parcel-ready (files in without side-effects). Use
+ src/vw-bridge/load.st as the external orchestrator for file-in + start +
+ .token write. Use src/vw-bridge/unload.st for the inverse defensive cleanup.
+ The Stage 2 defensive removal of old top-level Root.Smalltalk.VWBridge now
+ lives in load.st."
 
 "=== Define VWB namespace (Phase P P2 Stage 2) ==="
 [(Smalltalk at: #VWB ifAbsent: [nil]) isNil ifTrue: [
@@ -2667,25 +2672,3 @@ captureScreenshotViaSubprocess: aSpec rect: aRect
 	result at: 'width' put: (extent at: 1).
 	result at: 'height' put: (extent at: 2).
 	^result! !
-
-"=== Auto-start the bridge on file-in and write .token for agent pickup ==="
-"Stage 2: stop and remove old top-level Root.Smalltalk.VWBridge if present (defensive idempotent cleanup) before starting the new VWB.VWBridge."
-| f tokenPath oldVwBridge |
-oldVwBridge := Smalltalk at: #VWBridge ifAbsent: [nil].
-(oldVwBridge notNil and: [oldVwBridge environment == Root.Smalltalk]) ifTrue: [
-	[oldVwBridge stop] on: Core.Error do: [:ex | nil].
-	[oldVwBridge removeFromSystem] on: Core.Error do: [:ex |
-		Transcript cr; show: 'WARN: could not remove old Root.Smalltalk.VWBridge: ', ex description; cr]].
-VWB.VWBridge stop.
-VWB.VWBridge start.
-tokenPath := VWB.VWBridge tokenFilePath.
-f := [tokenPath asFilename writeStream] on: Core.Error do: [:ex | nil].
-f == nil
-	ifTrue: [Transcript cr; show: 'WARN: could not write .token file (', tokenPath, ') - copy token manually from Transcript'; cr]
-	ifFalse: [
-		[f lineEndTransparent] on: Core.Error do: [:ex | nil].
-		f nextPutAll: VWB.VWBridge singleton token.
-		f close.
-		Transcript cr; show: 'Token written to .token: '; show: VWB.VWBridge singleton token; cr]!
-
-		
