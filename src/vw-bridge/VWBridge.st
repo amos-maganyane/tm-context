@@ -2502,32 +2502,39 @@ pngExtentFromBytes: aByteArray
 	^Array with: w with: h!
 
 captureScreenshotViaSubprocess: aSpec rect: aRect
-	"v0.9.1 Step 17: Production screen-capture via PowerShell + System.Drawing
-	 subprocess (per Oracle F3 verdict - Path B; Path A pixel-encoder DEAD).
+	"v0.9.1 Step 17 session-13 fix: Production screen-capture via PowerShell
+	 plus System.Drawing subprocess (per Oracle F3 verdict - Path B). Uses
+	 OS.ExternalProcess execute:arguments:do:errorStreamDo: one-shot pattern
+	 - NOT bare proc wait (session-12 attempted bare wait which returned
+	 immediately with exit=259 STILL_ACTIVE because bare proc wait does not
+	 actually wait synchronously in this VW image - new carry-forward
+	 constraint number four). The one-shot drains stdout via the do block
+	 during subprocess lifetime which makes wait synchronize correctly
+	 (verified session-13 probe elapsed 2514ms for ~2.5s capture).
+
+	 outStream binary is essential. Without binary flip the stream returns
+	 TwoByteString with codepage-decoded characters that corrupt PNG bytes
+	 (verified session-13 probe: byte 137 PNG magic became 235 without flip).
+
 	 - aSpec: validated request dict (targetType, format, maxBytes, timeoutMs)
 	 - aRect: nil for screen target; window snapshot dict for window target
+
 	 Returns outcome Dictionary matching screenshotCaptureOverride shape so
 	 handleScreenshotBody: routes both paths identically.
 	   success keys: ok=true, pngBytes=ByteArray, width=Int, height=Int
 	   failure keys: ok=false, status=Int, error=String, message=String
-	 Pattern: OS.ExternalProcess defaultClass new (WinProcess on Windows) +
-	   lineEndTransparent (binary stdout safety - no CRLF mangling) +
-	   createInOutErrorPipes (drain stdout PNG + stderr diagnostics
-	   separately) + startProcess:arguments: (Array of ASCII validated
-	   strings). Args are validated INTs from VW side per Oracle PS-
-	   injection mitigation (NEVER concat user input into PS source - pass
-	   only mode + INT coords as separate argv entries). Standalone harness
-	   verification at Step 17 confirmed byte-faithful 594KB 2560x1440 PNG.
-	 v1: synchronous wait (no timeout enforcement); subprocess typically
-	 completes in <1s. Real timeout via poll+kill is a deferred improvement."
-	| helperPath argList proc stdoutBytes stderrText exitStatus extent result |
+
+	 v1: synchronous wait (no timeoutMs enforcement); subprocess typically
+	 completes in 2-3s for full virtual screen. Timeout enforcement via
+	 separate fork plus terminate is a deferred improvement."
+	| helperPath argList pngBytes stderrBuf invokeError extent result |
 	helperPath := self screenshotHelperScriptPath.
 	argList := Core.OrderedCollection new.
 	argList add: '-ExecutionPolicy'; add: 'Bypass'.
 	argList add: '-File'; add: helperPath.
 	aRect isNil
 		ifTrue: [
-			"screen target - PS computes from SystemInformation VirtualScreen"
+			"screen target - PS helper computes from SystemInformation VirtualScreen"
 			argList add: '-Mode'; add: 'screen']
 		ifFalse: [
 			"window target - use the resolved rect from windowsSnapshotForWait shape"
@@ -2541,44 +2548,35 @@ captureScreenshotViaSubprocess: aSpec rect: aRect
 			argList add: '-Y'; add: y printString.
 			argList add: '-W'; add: w printString.
 			argList add: '-H'; add: h printString].
-	"Build and launch subprocess"
-	proc := [OS.ExternalProcess defaultClass new] on: self errorClass do: [:ex |
-		^self screenshotErrorWithCode: 'screenshot-capture-failed'
-			status: 500
-			message: 'cannot instantiate OS.ExternalProcess: ' , ex description].
-	[proc lineEndTransparent] on: self errorClass do: [:ex | nil].
-	[proc createInOutErrorPipes] on: self errorClass do: [:ex |
-		[proc release] on: self errorClass do: [:ex2 | nil].
-		^self screenshotErrorWithCode: 'screenshot-capture-failed'
-			status: 500
-			message: 'cannot create pipes: ' , ex description].
-	[proc startProcess: 'powershell.exe' arguments: argList asArray]
+	pngBytes := nil.
+	stderrBuf := WriteStream on: String new.
+	invokeError := nil.
+	[OS.ExternalProcess
+		execute: 'powershell.exe'
+		arguments: argList asArray
+		do: [:outStream |
+			outStream binary.
+			pngBytes := [outStream upToEnd]
+				on: self errorClass do: [:ex | ByteArray new]]
+		errorStreamDo: [:errStream |
+			[stderrBuf nextPutAll: errStream upToEnd asString]
+				on: self errorClass do: [:ex | nil]]]
 		on: self errorClass do: [:ex |
-			[proc release] on: self errorClass do: [:ex2 | nil].
-			^self screenshotErrorWithCode: 'screenshot-capture-failed'
-				status: 500
-				message: 'cannot launch powershell.exe: ' , ex description].
-	"Wait for exit and drain pipes (synchronous; timeout enforcement deferred)"
-	[proc wait] on: self errorClass do: [:ex | nil].
-	stdoutBytes := [proc outputPipe upToEnd] on: self errorClass do: [:ex | ByteArray new].
-	stderrText := [proc errorPipe upToEnd] on: self errorClass do: [:ex | ''].
-	exitStatus := [proc exitStatus] on: self errorClass do: [:ex | -1].
-	[proc release] on: self errorClass do: [:ex | nil].
-	"Map outcome - non-zero exit OR empty stdout indicate subprocess failure"
-	exitStatus = 0 ifFalse: [
+			invokeError := 'powershell launch or run failed - ' , ex description].
+	invokeError notNil ifTrue: [
 		^self screenshotErrorWithCode: 'screenshot-capture-failed'
 			status: 500
-			message: 'powershell exit=' , exitStatus printString , '; stderr=' , stderrText asString].
-	stdoutBytes isEmpty ifTrue: [
+			message: invokeError , '; stderr=' , stderrBuf contents].
+	(pngBytes isNil or: [pngBytes isEmpty]) ifTrue: [
 		^self screenshotErrorWithCode: 'screenshot-capture-failed'
 			status: 500
-			message: 'subprocess returned 0 bytes; stderr=' , stderrText asString].
-	"Success - normalize to ByteArray and parse PNG IHDR for extent headers"
-	(stdoutBytes isKindOf: ByteArray) ifFalse: [stdoutBytes := stdoutBytes asByteArray].
-	extent := self pngExtentFromBytes: stdoutBytes.
+			message: 'subprocess returned 0 bytes; stderr=' , stderrBuf contents].
+	"Defensive normalization - binary flip should already yield ByteArray"
+	(pngBytes isKindOf: ByteArray) ifFalse: [pngBytes := pngBytes asByteArray].
+	extent := self pngExtentFromBytes: pngBytes.
 	result := Core.Dictionary new.
 	result at: 'ok' put: true.
-	result at: 'pngBytes' put: stdoutBytes.
+	result at: 'pngBytes' put: pngBytes.
 	result at: 'width' put: (extent at: 1).
 	result at: 'height' put: (extent at: 2).
 	^result! !
