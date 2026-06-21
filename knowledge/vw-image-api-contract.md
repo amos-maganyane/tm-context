@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-21 (session-13, after Phase F3 ship + subprocess wait fix)
-source_sessions: 3, 6, 7, 8, 9, 11, 12, 13
+last_verified: 2026-06-21 (session-15, after chunk file-in compile-scope bug fix + SUnit semantics discovery)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -37,7 +37,7 @@ If a selector you assume exists isn't listed here, **probe before using it.** Pr
 |---|---|---|
 | Get image file path | ✗ `Smalltalk imageFileName` / ✓ `ObjectMemory imageName` | `ObjectMemory imageName` |
 | Get current directory | ✓ | `Filename defaultDirectory` |
-| Read OS env var by name | ✗ `OS.OperatingSystem` (absent in this image) / ✓ `OS.CEnvironment userEnvironment at: 'X' ifAbsent: [...]` (fail-loud) / ✓ `OS.CEnvironment getenv: 'X'` (returns `''` on missing — GOTCHA) | see [Environment variables](#environment-variables-session-14) |
+| Read OS env var by name | ✗ `OS.OperatingSystem` (absent in this image) / ✓ `OS.CEnvironment userEnvironment at: 'X' ifAbsent: [...]` (fail-loud, DEPRECATED session-15 → use `OSSystemSupport getVariable: 'X'`) / ✓ `OS.CEnvironment getenv: 'X'` (returns `''` on missing — GOTCHA) | see [Environment variables](#environment-variables-session-14) |
 | Build output strings | ✗ `String streamContents:` / ✓ `WriteStream on: String new` | always use the WriteStream form |
 | Emit a newline in a stream | ✗ `Core.Character lf asString` (returns `'Core.Character lf'`) / ✓ `String with: Core.Character lf` | bind once at probe top: `nl := String with: Core.Character lf` |
 | Find substring index | ✗ 1-arg `indexOfSubCollection:` / ✓ `indexOfSubCollection: aSub startingAt: 1` | always 2-arg form |
@@ -398,7 +398,133 @@ vwBridgeHome
         ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set...']
 ```
 
-Tests inject via `VWBridge vwBridgeHomeOverride: 'C:\test\path'` and clear via `VWBridge clearVwBridgeHomeOverride` inside `ensure:` blocks. No OS env mutation in test setUp/tearDown — keeps the suite hermetic from process-wide env state.
+Tests inject via `VWB.VWBridge vwBridgeHomeOverride: 'C:\test\path'` and clear via `VWB.VWBridge clearVwBridgeHomeOverride` inside `ensure:` blocks. No OS env mutation in test setUp/tearDown — keeps the suite hermetic from process-wide env state.
+
+### Deprecation warning (session-15)
+
+This image's VW emits `CEnvironment class>>#userEnvironment is deprecated. To set an environment variable use OSSystemSupport>>#setVariable:value: (or #getVariable: to read an environment variable).` on every call. The warning fires 4× during VWB.VWBridge startup (logFilePath, tokenFilePath, etc.). Functional but noisy.
+
+Future cleanup: switch reads to `OSSystemSupport getVariable: 'VW_BRIDGE_HOME'` and writes to `OSSystemSupport setVariable:value:`. Probe semantics first (missing-key behavior may differ from `CEnvironment userEnvironment at:ifAbsent:`).
+
+---
+
+## Chunk file-in compile scope (session-15)
+
+`'path' asFilename fileIn` compiles methods in **Smalltalk's namespace context, NOT the class's own environment**. Even when the chunk header is `!VWB.MyClass methodsFor: 'cat'!` (fully-qualified), bare class references inside the method bodies resolve against Smalltalk's namespace chain, not VWB's.
+
+**Empirical evidence (session-15 P2 Stage 2 regression):**
+
+- `VWB.VWBridgeTest>>setUp` had `bridge := VWBridge singleton.` (bare reference)
+- After file-in, `(VWB.VWBridgeTest compiledMethodAt: #setUp) literals first` returned `(ResolvedDeferredBinding key: #VWBridge)`
+- `binding value` returned `nil` because `Smalltalk.VWBridge` had been removed in Stage 2
+- All test methods erroring with `MessageNotUnderstood: #singleton` on nil receiver
+- Latent bug shipped to `origin/main` in commit `d86274b` (session-14 Stage 2) — suite was never run end-to-end so the bug wasn't caught until session-15
+
+**Fix pattern: always fully-qualify cross-namespace class references in chunks**
+
+```smalltalk
+bridge := VWB.VWBridge singleton.   "✓ resolves to actual class"
+bridge := VWBridge singleton.        "✗ resolves to nil if not in Smalltalk"
+```
+
+Affects: any chunk file-in that crosses namespace boundaries. Doesn't affect:
+
+- Methods compiled in a Browser (different compile context — class's own environment is used)
+- `self`-based references inside a class's own methods
+- Fully-qualified literals (`#{VWB.VWBridge}` form, or `VWB.VWBridge` direct)
+- Symbol-based lookups (`Smalltalk at: #VWBridge`)
+
+**Session-14's claim "Bare VWBridge inside VWB-scoped methods resolves via namespace lookup" was empirically wrong** for chunk file-in scope. The claim may hold for Browser-compiled methods, but those aren't our path.
+
+---
+
+## SUnit semantics in this image (session-15)
+
+This image's `TestCase` has MAS customizations that break stock SUnit assumptions. Trap-rich; read before using any `suite`/`run` invocation.
+
+### `TestCase class>>testClasses` is MAS-customized
+
+Returns `^ServerTestCase testClasses , ClientTestCase testClasses` — the entire union of GemStone+VW server-side and client-side test class trees (hundreds of `GemStoneClasses.*Tests.*` classes). Calling `cls suite` for ANY subclass of `TestCase` aggregates the WHOLE image's tests.
+
+Verified via:
+
+```smalltalk
+(TestCase class compiledMethodAt: #testClasses) literals
+"=> #(#{Smalltalk.ServerTestCase} #testClasses #{Smalltalk.ClientTestCase})"
+```
+
+**Consequence**: `cls suite run` walks the full MAS test tree (~thousands of selectors). On any assertion failure, the bridge wedges 10-15 min (compounding session-12 constraint #2). This is what walked the runaway in session-15.
+
+### Per-class scope: `buildSuiteFromLocalSelectors`
+
+Build a per-class TestSuite using ONLY the class's local `test*` selectors (no `testClasses` walk):
+
+```smalltalk
+result := VWB.VWBridgeTest buildSuiteFromLocalSelectors run.
+```
+
+Bypasses `suite` → `buildSuite` → `testClasses` walk entirely. Returns a `TestResult` with one entry per local test selector.
+
+### Selective TestSuite (subset of selectors)
+
+```smalltalk
+| suite |
+suite := TestSuite new.
+#(#testFoo #testBar) do: [:sel | suite addTest: (cls selector: sel)].
+suite run printString
+```
+
+Useful for running just the hermetic (non-dispatching) tests via `/eval` to avoid the per-process re-entry guard.
+
+### Exception handling
+
+- **`on: Core.Exception do:` catches `MessageNotUnderstood` and `Core.Error` subclasses** when wrapping `(cls selector: sel) run` — no debugger pop, no bridge wedge (session-15 verified empirically).
+- **Whether `on: Core.Exception do:` catches `TestFailure`** (assertion-failed exception) is UNKNOWN as of session-15 — was deferred to avoid bridge wedge risk during diagnosis.
+- Per session-12 constraint #2: SUnit assertion failures via `/eval` pop the VW debugger blocking the serve-process. The constraint applies specifically to `TestFailure`; MNU and other errors are caught by SUnit's internal handler and recorded in the `TestResult`'s `errors` collection.
+
+### `TestResult` access patterns
+
+```smalltalk
+result := suite run.
+result runCount.        "Integer - total tests"
+result passedCount.     "Integer"
+result failureCount.    "Integer"
+result errorCount.      "Integer"
+result failures.        "Collection of failed TestCase instances"
+result errors.          "Collection of errored TestCase instances"
+"Each TestCase has #selector — but NOT the exception object directly"
+result printString.     "e.g., '20 run, 18 passed, 1 failed, 1 error'"
+```
+
+To get the actual exception text for a failed/errored test, invoke the test method via `tc perform: aSelector` wrapped in `on: Core.Exception do:` (bypasses SUnit's internal handler).
+
+---
+
+## Workspace vs /eval namespace resolution (session-15)
+
+VW Workspace and `/eval` use DIFFERENT namespace resolution paths.
+
+- **`/eval`** runs in the bridge serve-process's namespace context. Bare `WriteStream`, `String`, etc. resolve to the stock VW Core classes unambiguously.
+- **Workspace** runs in a stricter context that flags ambiguity. This image has GemBuilder-imported namespaces (`GemStone.Gbs.ServerClasses.WriteStreamLegacy`, `GemStoneClasses.Globals.String`, `GemStoneClasses.WealthGlobalsTests.StringTest`, etc.) that collide with stock VW class names. Workspace pops an "Ambiguous class or variable" disambiguation dialog OR auto-picks the wrong candidate (e.g., `WriteStream` → `GemStone.Gbs.ServerClasses.WriteStreamLegacy`).
+
+**Fix**: any Smalltalk code given to a human for Workspace paste MUST fully-qualify standard classes:
+
+```smalltalk
+| s nl |
+s := Core.WriteStream on: Core.String new.       "✓ unambiguous"
+nl := Core.String with: Core.Character lf.        "✓ unambiguous"
+"... NOT bare WriteStream / String / Character ..."
+```
+
+This is in addition to qualifying cross-namespace references like `VWB.VWBridge`.
+
+**Pre-flight rule for code given to a human**: while the bridge is up, verify Smalltalk syntax via `/eval` BEFORE handing it to the user for Workspace paste. The /eval pre-flight catches:
+
+- Syntax errors (parser rejects)
+- Class-resolution errors that work in /eval but fail in Workspace (require Core.* prefix)
+- MNU errors on speculative API names
+
+The pre-flight is cheap (~1 sec) and saves the human a paste-error round-trip.
 
 ---
 
@@ -627,7 +753,12 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **Bare `OS.ExternalProcess>>wait` does NOT actually wait** (session-12 problem; session-13 FIX): use `execute:arguments:do:errorStreamDo:` one-shot pattern + `outStream binary` flip — see [Subprocess invocation](#subprocess-invocation-session-13) section.
 - **PowerShell `>` redirection mangles binary stdout** (session-12): UTF-16 LE Out-File semantics even when subprocess writes raw bytes. Use .NET Process API OR `cmd /c "..." > file` for byte-faithful redirection.
 - **`ExternalReadAppendStream nextPutAll: aByteArray`** requires `binary` flip (session-13): raises "Strings only store Characters" otherwise. For socket-write of binary responses (e.g. /screenshot PNG): `(response isKindOf: ByteArray) ifTrue: [stream binary]` before `nextPutAll:`.
-- **OS env vars** via `OS.CEnvironment userEnvironment at:ifAbsent:` for fail-loud (session-14): `OS.OperatingSystem` ABSENT in this image; `getenv:` returns `''` on missing (gotcha — naive `isNil` check breaks); `OS.ExternalProcess environment` / `ObjectMemory environment` / `Smalltalk environment` return Smalltalk NameSpace not env vars (misnomer). See [Environment variables](#environment-variables-session-14) section.
+- **OS env vars** via `OS.CEnvironment userEnvironment at:ifAbsent:` for fail-loud (session-14): `OS.OperatingSystem` ABSENT in this image; `getenv:` returns `''` on missing (gotcha — naive `isNil` check breaks); `OS.ExternalProcess environment` / `ObjectMemory environment` / `Smalltalk environment` return Smalltalk NameSpace not env vars (misnomer). `userEnvironment` is DEPRECATED (session-15) in favor of `OSSystemSupport getVariable:` / `setVariable:value:` — fires 4× per bridge startup. See [Environment variables](#environment-variables-session-14) section.
+- **Chunk file-in compile scope is Smalltalk, NOT the class's environment** (session-15): bare class references in chunk-filed methods resolve against Smalltalk's namespace chain, not the receiving class's own environment. Cross-namespace refs MUST be fully-qualified (`VWB.VWBridge` not `VWBridge`). Session-14 claim "bare VWBridge in VWB-scoped methods resolves via namespace lookup" was empirically wrong — latent bug shipped in `d86274b` Stage 2 commit, caught session-15. See [Chunk file-in compile scope](#chunk-file-in-compile-scope-session-15).
+- **`TestCase class>>testClasses` is MAS-customized** to walk `ServerTestCase` + `ClientTestCase` (session-15): `cls suite` for ANY `TestCase` subclass aggregates the whole image's tests (hundreds of `GemStoneClasses.*Tests.*` classes). Use `cls buildSuiteFromLocalSelectors run` for per-class scope, or `TestSuite new addTest:` for selective subsets. See [SUnit semantics](#sunit-semantics-in-this-image-session-15).
+- **`on: Core.Exception do:` catches `MessageNotUnderstood` and `Core.Error`** safely via /eval (session-15): no debugger pop, no bridge wedge. Whether it catches `TestFailure` (assertion-failed exception) is UNKNOWN — session-12 constraint #2 still holds for actual assertion failures.
+- **Workspace requires `Core.*` qualification** for stock class names (session-15): GemBuilder-imported namespaces (`GemStone.Gbs.ServerClasses.WriteStreamLegacy`, `GemStoneClasses.Globals.String`, etc.) collide with VW core classes. /eval resolves bare names against the bridge serve-process's scope; Workspace pops disambiguation OR auto-picks the wrong candidate. Smalltalk handed to a human for Workspace paste MUST use `Core.String`, `Core.WriteStream`, `Core.Character`, etc.
+- **/eval pre-flight rule** (session-15): while the bridge is up, verify any Smalltalk syntax via /eval BEFORE handing to a human for Workspace paste. Catches syntax errors, Workspace-vs-/eval ambiguity, and MNU on speculative API names. Cheap (~1 sec) — saves the human a paste-error round-trip.
 
 ---
 
