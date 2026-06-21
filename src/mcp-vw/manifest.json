@@ -1,0 +1,117 @@
+{
+  "manifest_version": "0.3",
+  "name": "vw-bridge",
+  "display_name": "VW Bridge (VisualWorks 9.3.1 MCP)",
+  "version": "0.3.0",
+  "description": "Drive a VisualWorks 9.3.1 image through the VW Bridge HTTP API. Exposes 48 tools (18 MVP + 13 V2 + 17 V3) spanning liveness, code reading/navigation/description, NATIVE-TYPED scaffolders (class + windowSpec + ApplicationModel + dialog + parcel), method compile/define/delete, UI inspect/drive/dialogs/wait/screenshot, parcel load/unload/create, class introspection (fingerprint/hierarchy/export/search), and SUnit testing (run + describe failure).",
+  "long_description": "MCP server bridging Claude Desktop into a live VisualWorks 9.3.1 image via the VW Bridge HTTP endpoint at http://127.0.0.1:9876. Requires the VW Bridge to be running (Start-VWBridge.bat) and VW_BRIDGE_HOME env var set. Built for the MAS / Old Mutual Wealth WEALTH (storedev64.im) deployment but works against any VW Bridge instance.",
+  "author": {
+    "name": "Amos Maganyane",
+    "url": "https://github.com/amos-maganyane/tm-context"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/amos-maganyane/tm-context",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amos-maganyane/tm-context"
+  },
+  "icon": "icon.png",
+  "keywords": [
+    "mcp",
+    "visualworks",
+    "smalltalk",
+    "vw-bridge",
+    "claude-desktop"
+  ],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/src/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/src/index.js"],
+      "env": {
+        "VW_BRIDGE_URL": "${user_config.bridge_url}",
+        "VW_BRIDGE_TOKEN_FILE": "${user_config.token_file}",
+        "MCP_VW_SINGLE_OWNER": "${user_config.single_owner}"
+      }
+    }
+  },
+  "user_config": {
+    "bridge_url": {
+      "type": "string",
+      "title": "Bridge URL",
+      "description": "URL where the VW Bridge HTTP listener is running. Default works for local single-developer setups.",
+      "default": "http://127.0.0.1:9876",
+      "required": true
+    },
+    "token_file": {
+      "type": "string",
+      "title": "Path to bridge .token file",
+      "description": "Absolute path to the bridge's .token file. Bridge rotates this on every cold-start; mcp-vw re-reads on every call.",
+      "default": "${HOME}/code/tm-context/src/vw-bridge/.token",
+      "sensitive": true,
+      "required": true
+    },
+    "single_owner": {
+      "type": "boolean",
+      "title": "Enforce single-owner lock (recommended)",
+      "description": "Prevent two mcp-vw processes from talking on the same stdio channel. Claude Desktop on Windows MSIX has historically spawned duplicate MCP servers; this guard catches that. Set to false only for parallel dev/test workflows.",
+      "default": true
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": ["win32", "darwin", "linux"],
+    "node_runtime": ">=20.0.0"
+  },
+  "tools": [
+    { "name": "vw_health", "description": "Auth-exempt liveness check. Returns {status, version}." },
+    { "name": "vw_version", "description": "Auth-exempt build metadata. Returns {version, buildCommitSha, buildTimestamp, parcelMode}." },
+    { "name": "vw_status", "description": "Composite: /health + /version + a cheap eval probe." },
+    { "name": "vw_eval", "description": "Evaluate arbitrary Smalltalk via /eval. Escape hatch — prefer typed tools first. Bug #5 + #41 guards." },
+    { "name": "vw_list_namespaces", "description": "List every namespace in the VW image (~312 entries)." },
+    { "name": "vw_list_namespace_entries", "description": "List bindings in a single namespace." },
+    { "name": "vw_get_class_definition", "description": "Get class definition source (subclass: form)." },
+    { "name": "vw_list_methods", "description": "List methods (side + category + selector) for a class." },
+    { "name": "vw_find_senders", "description": "Find Class>>selector pairs sending a selector. Cap 500. Optional scope." },
+    { "name": "vw_create_class", "description": "NATIVE-TYPED class creator: emits canonical subclass:... Smalltalk from JSON params. Refuses VWB.* (#41)." },
+    { "name": "vw_open_application", "description": "Open an ApplicationModel subclass. Refuses VWB.*." },
+    { "name": "vw_list_windows", "description": "Enumerate live VW windows." },
+    { "name": "vw_describe_window", "description": "Get widget tree of a named window." },
+    { "name": "vw_click", "description": "Click a named widget in a live VW window." },
+    { "name": "vw_type", "description": "Set the value of an input field." },
+    { "name": "vw_load_parcel", "description": "Load a binary .pcl parcel from disk." },
+    { "name": "vw_unload_parcel", "description": "Unload a parcel by name (Notification-resume per #38). Refuses VWBridge." },
+    { "name": "vw_list_loaded_parcels", "description": "List names of loaded parcels." },
+    { "name": "vw_describe_class", "description": "Composite class description: definition + comment + instance methods + class methods in one call." },
+    { "name": "vw_find_implementors", "description": "Find Class>>selector pairs that IMPLEMENT a given selector. Cap 500. Optional scope." },
+    { "name": "vw_find_references_to", "description": "Find Class>>selector pairs that reference a given global (class name / shared variable). Cap 500." },
+    { "name": "vw_get_widget_value", "description": "Read live value of an aspect from a running VW window (verifies vw_type/vw_click took effect)." },
+    { "name": "vw_create_window_spec", "description": "NATIVE-TYPED canvas/windowSpec emitter: JSON → canonical literal-array form (the probe-3 design unlock). 13 component types." },
+    { "name": "vw_compile_method", "description": "NATIVE-TYPED method compile (instance or class side). Refuses VWB.* (#41)." },
+    { "name": "vw_define_action", "description": "NATIVE-TYPED: add an instance-side action method to a class (wraps vw_compile_method)." },
+    { "name": "vw_define_aspect", "description": "NATIVE-TYPED: add a lazy-init aspect accessor (the canonical ValueHolder pattern)." },
+    { "name": "vw_create_application_model", "description": "HEAVYWEIGHT NATIVE-TYPED scaffolder: class + ivs + aspect accessors + actions + hooks + windowSpec, all in ONE call." },
+    { "name": "vw_create_dialog", "description": "NATIVE-TYPED SimpleDialog scaffolder. Same machinery as vw_create_application_model with SimpleDialog default." },
+    { "name": "vw_run_test_class", "description": "Run every test* selector on a TestCase via the SAFE direct-invoke gate pattern (#20). Returns JSON suite summary." },
+    { "name": "vw_run_test_method", "description": "Run ONE test method on a TestCase via direct-invoke gate. Returns JSON {result, errorMessage}." },
+    { "name": "vw_list_failing_tests", "description": "Run every test* selector + return ONLY failures + errors (no passes)." },
+    { "name": "vw_list_namespace_classes", "description": "List ONLY class bindings in a namespace (filter out shared vars)." },
+    { "name": "vw_list_all_classes", "description": "Bulk enumerate every class as Namespace.ClassName. Cap default 5000." },
+    { "name": "vw_list_test_classes", "description": "Discover TestCase subclasses ending in Test/Tests. Optional scope filter." },
+    { "name": "vw_get_method_fingerprint", "description": "Behavioral fingerprint (numArgs/numTemps/messages/literals) since sources stripped." },
+    { "name": "vw_get_class_hierarchy", "description": "Walk superclass chain + direct subclasses. Returns JSON {chain, directSubclasses}." },
+    { "name": "vw_export_class", "description": "Structural dump: definition + comment + every method with category/numArgs/numMessages." },
+    { "name": "vw_search_method_messages", "description": "Find methods that SEND any selector containing a substring. Cap 500." },
+    { "name": "vw_compile_class_definition", "description": "Compile raw class definition Smalltalk. Refuses VWB.* + Bug #5 substrings." },
+    { "name": "vw_delete_method", "description": "DESTRUCTIVE: remove a method via removeSelector:. Refuses VWB.*." },
+    { "name": "vw_delete_class", "description": "DESTRUCTIVE: remove a class via removeFromSystem. Requires confirm:true. Refuses VWB.*." },
+    { "name": "vw_set_class_comment", "description": "Set the class comment text. Refuses VWB.*." },
+    { "name": "vw_list_dialogs", "description": "Enumerate live modal SimpleDialog instances." },
+    { "name": "vw_respond_dialog", "description": "Click a named button on the currently-posted modal dialog." },
+    { "name": "vw_wait", "description": "Block until a UI predicate is satisfied. Predicates: windowExists, aspectEquals, aspectNotEmpty, dialogExists, dialogGone." },
+    { "name": "vw_screenshot", "description": "Capture PNG of screen or a window. Returns MCP ImageContent (base64) for direct rendering." },
+    { "name": "vw_describe_test_failure", "description": "Re-run a single failing test + capture structured exception details (class, message, stack snippet)." },
+    { "name": "vw_create_parcel", "description": "HEAVYWEIGHT: build a binary .pcl parcel from typed JSON spec. Cursor monkey-patch + canonical parcelOutOn: pattern. Refuses VWB.* targets (#41)." }
+  ]
+}
