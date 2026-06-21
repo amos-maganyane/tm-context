@@ -98,45 +98,71 @@ screenshotResponseFor: aBodyString
 	^bridge handleScreenshotBody: aBodyString!
 
 statusLineOf: aResponse
-	"First line of the HTTP response (before first CR).
-	 Works for both String and ByteArray responses (treats high bytes as
-	 character codes; status line is always ASCII)."
-	| idx |
-	idx := aResponse indexOf: Core.Character cr.
+	"First line of the HTTP response (before first CR / LF). ALWAYS returns
+	 a String so callers can safely concat into 'description: ' messages
+	 even when aResponse is a binary ByteArray response from
+	 httpBinaryResponse: (session-16 fix: previous version used
+	 indexOf: Core.Character cr which returns 0 on ByteArray due to
+	 element-type mismatch, then returned the whole ByteArray, causing
+	 'Strings only store Characters' when the test concatenated it into
+	 a description message)."
+	| resp idx |
+	resp := (aResponse isKindOf: Core.ByteArray) ifTrue: [aResponse asString] ifFalse: [aResponse].
+	idx := resp indexOf: Core.Character cr.
 	idx = 0 ifTrue: [
 		"Try LF as fallback - PowerShell helper might emit LF-only"
-		idx := aResponse indexOf: Core.Character lf].
-	^idx > 0 ifTrue: [aResponse copyFrom: 1 to: idx - 1] ifFalse: [aResponse]!
+		idx := resp indexOf: Core.Character lf].
+	^idx > 0 ifTrue: [resp copyFrom: 1 to: idx - 1] ifFalse: [resp]!
 
 bodyOf: aResponse
-	"Everything after the headers/body separator (CR LF CR LF).
-	 Uses 2-arg indexOfSubCollection:startingAt: per image API contract."
-	| crlf sep idx |
-	crlf := String with: Core.Character cr with: Core.Character lf.
-	sep := crlf , crlf.
+	"Everything after the headers/body separator (CR LF CR LF). Works on
+	 both String and ByteArray responses. PRESERVES TYPE: ByteArray in =>
+	 ByteArray out (so binary body comparisons against #[...] fakePngBytes
+	 succeed). Session-16 fix: previous version used String separator with
+	 ByteArray indexOfSubCollection: aString which returns 0 per image API
+	 contract (ByteArray-Integer vs String-Character type mismatch)."
+	| isBytes sep idx |
+	isBytes := aResponse isKindOf: Core.ByteArray.
+	sep := isBytes
+		ifTrue: [#[13 10 13 10]]
+		ifFalse: [(String with: Core.Character cr with: Core.Character lf)
+			, (String with: Core.Character cr with: Core.Character lf)].
 	idx := aResponse indexOfSubCollection: sep startingAt: 1.
 	^idx > 0
 		ifTrue: [aResponse copyFrom: idx + sep size to: aResponse size]
-		ifFalse: ['']!
+		ifFalse: [isBytes ifTrue: [#[]] ifFalse: ['']]!
 
 bodyContains: aSubstring in: aResponse
-	"Predicate: does the response contain the substring? Uses 2-arg
-	 indexOfSubCollection: per image API contract. Works on String and
-	 ByteArray responses (byte-comparison)."
-	^(aResponse indexOfSubCollection: aSubstring startingAt: 1) > 0!
+	"Predicate: does the response contain the substring? Works on String
+	 and ByteArray. Session-16 fix: when receiver is ByteArray, converts
+	 aSubstring to ByteArray for byte-level comparison (aByteArray
+	 indexOfSubCollection: aString returns 0 per image API contract -
+	 ByteArray-Integer vs String-Character type mismatch). aSubstring is
+	 always ASCII for HTTP status / headers / error markers so asByteArray
+	 is byte-faithful."
+	| needle |
+	needle := (aResponse isKindOf: Core.ByteArray)
+		ifTrue: [aSubstring asByteArray]
+		ifFalse: [aSubstring].
+	^(aResponse indexOfSubCollection: needle startingAt: 1) > 0!
 
 headerContains: aSubstring in: aResponse
 	"Check if a substring appears in the header section only (before body
 	 separator). Useful for asserting Content-Type without false positives
-	 from body content."
-	| crlf sep idx headerSection |
-	crlf := String with: Core.Character cr with: Core.Character lf.
-	sep := crlf , crlf.
+	 from body content. Works on both String and ByteArray. Session-16 fix:
+	 see bodyContains:in: + bodyOf: notes - ByteArray-aware separator + needle."
+	| isBytes sep idx headerSection needle |
+	isBytes := aResponse isKindOf: Core.ByteArray.
+	sep := isBytes
+		ifTrue: [#[13 10 13 10]]
+		ifFalse: [(String with: Core.Character cr with: Core.Character lf)
+			, (String with: Core.Character cr with: Core.Character lf)].
 	idx := aResponse indexOfSubCollection: sep startingAt: 1.
 	headerSection := idx > 0
 		ifTrue: [aResponse copyFrom: 1 to: idx - 1]
 		ifFalse: [aResponse].
-	^(headerSection indexOfSubCollection: aSubstring startingAt: 1) > 0! !
+	needle := isBytes ifTrue: [aSubstring asByteArray] ifFalse: [aSubstring].
+	^(headerSection indexOfSubCollection: needle startingAt: 1) > 0! !
 
 !VWB.VWBridgeScreenshotTest methodsFor: 'fixture - helpers'!
 
