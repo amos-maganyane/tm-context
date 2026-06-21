@@ -427,6 +427,15 @@ serve: aConnection
 		on: err do: [:ex |
 			self httpResponse: 500 type: 'application/json'
 				body: '{"error":"internal","message":"' , ex description , '"}'].
+	(response isKindOf: ByteArray) ifTrue: [
+		"v0.9.1 Step 18: binary response (e.g. /screenshot PNG bytes) needs
+		 stream flipped to binary mode so nextPutAll: ByteArray succeeds.
+		 Default ExternalReadAppendStream is character-mode and raises
+		 Strings only store Characters on a ByteArray argument (verified
+		 session-13 probe-step18-socket-write.st). lineEndTransparent is
+		 already set at the top of this method so CRLF inside the body
+		 will not be retranslated."
+		[stream binary] on: err do: [:ex | nil]].
 	[stream nextPutAll: response] on: err do: [:ex | nil].
 	self flushStream: stream.
 	[stream close] on: err do: [:ex | nil].
@@ -497,7 +506,7 @@ dispatch: requestLine headers: headers body: bodyString
 	 the foot-gun.
 	 All routes:
 	   GET  /health /windows /windows/tree /value /menu /dialogs
-	   POST /click /type /menu/click /eval /dialogs/respond /wait
+	   POST /click /type /menu/click /eval /dialogs/respond /wait /screenshot
 	   PUT  /value
 	   OPTIONS *"
 	| proc depth err |
@@ -552,6 +561,7 @@ doDispatch: requestLine headers: headers body: bodyString
 		path = '/eval' ifTrue: [^self handleEvalBody: bodyString].
 		path = '/dialogs/respond' ifTrue: [^self handleDialogsRespondBody: bodyString].
 		path = '/wait' ifTrue: [^self handleWait: bodyString].
+		path = '/screenshot' ifTrue: [^self handleScreenshotBody: bodyString].
 		^self httpResponse: 404 type: 'application/json'
 			body: '{"error":"not_found","path":"' , path , '"}'].
 	method = 'PUT' ifTrue: [
