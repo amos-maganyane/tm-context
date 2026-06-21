@@ -1863,29 +1863,14 @@ safeJsonFor: anObject
 !VWBridge methodsFor: 'http'!
 
 httpResponse: code type: contentType body: bodyString
+	"v0.9.1: Refactored to use httpReasonPhraseFor: (centralized) for
+	 reason-phrase lookup. Behavior unchanged for the 7 status codes
+	 previously in the inline chain (200/400/401/404/405/408/500); the
+	 409/413/415 codes also get correct reason phrases now (previously
+	 fell through to 'Error' fallback - cosmetic but client-visible)."
 	| crlf out reason |
 	crlf := Core.String with: (Core.Character value: 13) with: (Core.Character value: 10).
-	reason := code = 200
-		ifTrue: ['OK']
-		ifFalse: [
-			code = 400
-				ifTrue: ['Bad Request']
-				ifFalse: [
-					code = 401
-						ifTrue: ['Unauthorized']
-						ifFalse: [
-							code = 404
-								ifTrue: ['Not Found']
-								ifFalse: [
-									code = 405
-										ifTrue: ['Method Not Allowed']
-										ifFalse: [
-											code = 408
-												ifTrue: ['Request Timeout']
-												ifFalse: [
-													code = 500
-														ifTrue: ['Internal Server Error']
-														ifFalse: ['Error']]]]]]].
+	reason := self httpReasonPhraseFor: code.
 	out := Core.WriteStream on: Core.String new.
 	out nextPutAll: 'HTTP/1.1 ' , code printString , ' ' , reason; nextPutAll: crlf.
 	out nextPutAll: 'Content-Type: ' , contentType; nextPutAll: crlf.
@@ -1894,7 +1879,83 @@ httpResponse: code type: contentType body: bodyString
 	out nextPutAll: 'Connection: close'; nextPutAll: crlf.
 	out nextPutAll: crlf.
 	out nextPutAll: bodyString.
-	^out contents! !
+	^out contents!
+
+httpReasonPhraseFor: code
+	"v0.9.1: HTTP reason-phrase lookup. Centralizes the chain that used
+	 to live inline in httpResponse:type:body: and extends it with
+	 409 / 413 / 415 needed by /screenshot. Reused by the new
+	 httpBinaryResponse: family so text + binary paths emit consistent
+	 reason phrases. Falls back to 'Error' for unknown codes (matches
+	 the pre-v0.9.1 fallback)."
+	code = 200 ifTrue: [^'OK'].
+	code = 400 ifTrue: [^'Bad Request'].
+	code = 401 ifTrue: [^'Unauthorized'].
+	code = 404 ifTrue: [^'Not Found'].
+	code = 405 ifTrue: [^'Method Not Allowed'].
+	code = 408 ifTrue: [^'Request Timeout'].
+	code = 409 ifTrue: [^'Conflict'].
+	code = 413 ifTrue: [^'Payload Too Large'].
+	code = 415 ifTrue: [^'Unsupported Media Type'].
+	code = 500 ifTrue: [^'Internal Server Error'].
+	^'Error'!
+
+httpBinaryResponse: code type: contentType body: byteArray
+	"v0.9.1: Convenience - binary HTTP response with no extra headers.
+	 See the 4-arg sibling for details. Used by /screenshot Step 12;
+	 Step 13 adds X-VWBridge-Screenshot-Width/Height via the 4-arg form."
+	^self httpBinaryResponse: code type: contentType body: byteArray extraHeaders: #()!
+
+httpBinaryResponse: code type: contentType body: byteArray extraHeaders: aHeaderCollection
+	"v0.9.1: Binary sibling of httpResponse:type:body:. Builds the entire
+	 HTTP response (status line + headers + body) as a single ByteArray so
+	 high-byte values in the body (PNG pixel data, etc.) round-trip without
+	 character-encoding mangling that String-backed streams would impose.
+	   - code: integer HTTP status (200 / 400 / 413 / etc.)
+	   - contentType: e.g. 'image/png'
+	   - byteArray: body bytes; MUST be a ByteArray (not String)
+	   - aHeaderCollection: SequenceableCollection of pre-formatted
+	     'Header-Name: value' strings (ASCII), one per entry. Empty
+	     collection = no extras.
+	 Auto-emits Content-Type / Content-Length / Access-Control-Allow-Origin /
+	 Connection (parallel to httpResponse:type:body:). Reason phrase via
+	 httpReasonPhraseFor:.
+	 Binary safety: 'WriteStream on: (ByteArray new: N)' round-trips byte
+	 values 0..255 byte-for-byte (verified session-11 _probe-f3-subprocess.st
+	 with PNG magic bytes #[137 80 78 71 13 10 26 10]). Pre-sizing the
+	 buffer to body+512 avoids reallocation churn on large captures (e.g.
+	 16 MiB PNG).
+	 Reusable for any future binary endpoint (downloads, file content, etc.)."
+	| crlf reason ws |
+	crlf := ByteArray with: 13 with: 10.
+	reason := self httpReasonPhraseFor: code.
+	ws := WriteStream on: (ByteArray new: byteArray size + 512).
+	self appendAsciiString: ('HTTP/1.1 ' , code printString , ' ' , reason) toByteStream: ws.
+	ws nextPutAll: crlf.
+	self appendAsciiString: ('Content-Type: ' , contentType) toByteStream: ws.
+	ws nextPutAll: crlf.
+	self appendAsciiString: ('Content-Length: ' , byteArray size printString) toByteStream: ws.
+	ws nextPutAll: crlf.
+	self appendAsciiString: 'Access-Control-Allow-Origin: *' toByteStream: ws.
+	ws nextPutAll: crlf.
+	self appendAsciiString: 'Connection: close' toByteStream: ws.
+	ws nextPutAll: crlf.
+	aHeaderCollection do: [:hdrLine |
+		self appendAsciiString: hdrLine toByteStream: ws.
+		ws nextPutAll: crlf].
+	ws nextPutAll: crlf.
+	ws nextPutAll: byteArray.
+	^ws contents!
+
+appendAsciiString: aString toByteStream: aWriteStream
+	"v0.9.1: Helper - write each character of aString as its ASCII byte
+	 value to a ByteArray-backed WriteStream. Used by httpBinaryResponse:
+	 to splice header strings into the binary response. Caller's
+	 responsibility to ensure aString is ASCII-only (header names + status
+	 line + auto-emitted framing); pre-validated request fields go through
+	 the Smalltalk side (parseAndValidateScreenshotRequest:) before they
+	 can reach an HTTP header line."
+	aString do: [:ch | aWriteStream nextPut: ch asInteger]! !
 
 !VWBridge methodsFor: 'wait handler'!
 
@@ -2178,16 +2239,27 @@ handleScreenshotBody: aBodyString
 	 so it must be safe to call from any process. Validation rejects
 	 unknown target.type, non-png format, out-of-range maxBytes/timeoutMs,
 	 and window targets missing both appClass and titleContains.
-	 Capture path (override OR production subprocess) lands in Step 13.
-	 See plan/PLAN-PHASE-F-SCREENSHOT.md and VWBridgeScreenshotTest."
-	| spec |
+	 Capture: tries screenshotCaptureOverride first (test seam), else
+	 falls back to production captureScreenshotViaSubprocess: (Step 17).
+	 Width/Height headers + maxBytes 413 + window 404/409 + failure
+	 408/500 mapping land in Steps 13/14/15/16. See PLAN-PHASE-F-
+	 SCREENSHOT.md and VWBridgeScreenshotTest."
+	| spec rect outcome |
 	spec := self parseAndValidateScreenshotRequest: aBodyString.
 	(spec at: 'ok') = false ifTrue: [
 		^self httpResponse: (spec at: 'status') type: 'application/json'
 			body: (self jsonScreenshotErrorBodyFor: spec)].
-	"Validation passed - capture path lands in Step 13."
+	"Window-target resolution lands in Step 15. For screen target rect is nil."
+	rect := nil.
+	"Try test seam override first; failure-outcome mapping (408/500) is Step 16."
+	screenshotCaptureOverride ifNotNil: [
+		outcome := screenshotCaptureOverride value: spec value: rect.
+		(outcome isKindOf: Core.Dictionary) ifTrue: [
+			(outcome at: 'ok' ifAbsent: [false]) = true ifTrue: [
+				^self httpBinaryResponse: 200 type: 'image/png' body: (outcome at: 'pngBytes')]]].
+	"Production capture path - lands in Step 17."
 	^self httpResponse: 500 type: 'application/json'
-		body: '{"error":"screenshot-not-yet-implemented","message":"validation passed but capture path lands in Step 13 - see plan/PLAN-PHASE-F-SCREENSHOT.md"}'!
+		body: '{"error":"screenshot-not-yet-implemented","message":"production capture path lands in Step 17"}'!
 
 parseAndValidateScreenshotRequest: aBodyString
 	"Parse + validate /screenshot JSON body. Returns Dictionary with key
