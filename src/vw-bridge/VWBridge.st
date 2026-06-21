@@ -18,7 +18,7 @@ Root.Smalltalk defineClass: #VWBridge
 	superclass: #{Core.Object}
 	indexedType: #none
 	private: false
-	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots '
+	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots screenshotCaptureOverride scriptedWindowsForScreenshot '
 	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex '
 	imports: ''
 	category: 'VW-TestBridge'!
@@ -287,6 +287,34 @@ clearWaitOverrides
 	sleepOverride := nil.
 	scriptedWindowSnapshots := nil.
 	scriptedDialogSnapshots := nil! !
+
+!VWBridge methodsFor: 'screenshot helpers'!
+
+screenshotCaptureOverride: aBlock
+	"v0.9.1: Test seam setter. When non-nil, handleScreenshotBody: invokes
+	 this block (with spec + rect) instead of captureScreenshotViaSubprocess:.
+	 Block returns a Dictionary per Oracle F3 shape:
+	   success: { 'ok'->true, 'pngBytes'->ByteArray, 'width'->Int, 'height'->Int }
+	   failure: { 'ok'->false, 'status'->Int, 'error'->String, 'message'->String }
+	 Production behavior unchanged when nil (default). See VWBridgeScreenshotTest."
+	screenshotCaptureOverride := aBlock!
+
+scriptedWindowsForScreenshot: anOrderedCollection
+	"v0.9.1: Test seam setter. When non-nil, resolveWindowRectForScreenshot:
+	 uses this collection instead of the live UI windows snapshot.
+	 INTENTIONALLY SEPARATE from scriptedWindowSnapshots so /wait and
+	 /screenshot tests do not interfere with each other. Each entry is a
+	 Dictionary with keys 'id', 'appClass', 'title', 'viewClass', 'bounds',
+	 'originX', 'originY', 'cornerX', 'cornerY' (see VWBridgeScreenshotTest
+	 windowRectSnapshotAppClass:titleContains:origin:corner: for shape)."
+	scriptedWindowsForScreenshot := anOrderedCollection!
+
+clearScreenshotOverrides
+	"v0.9.1: Clear both screenshot test seams. Call from
+	 VWBridgeScreenshotTest>>tearDown to restore production behavior.
+	 Independent of clearWaitOverrides."
+	screenshotCaptureOverride := nil.
+	scriptedWindowsForScreenshot := nil! !
 
 !VWBridge methodsFor: 'initialization'!
 
@@ -2140,6 +2168,119 @@ waitTimeoutBodyFor: aSpec result: aResult polls: pollCount elapsedMs: elapsed
 	body at: 'elapsedMs' put: elapsed.
 	body at: 'polls' put: pollCount.
 	^self jsonFor: body! !
+
+!VWBridge methodsFor: 'screenshot handler'!
+
+handleScreenshotBody: aBodyString
+	"v0.9.1 POST /screenshot - bridge screen-capture endpoint. Returns
+	 raw PNG bytes (image/png) on success or JSON error envelope on
+	 failure. Tests invoke this method DIRECTLY (not through HTTP layer)
+	 so it must be safe to call from any process. Validation rejects
+	 unknown target.type, non-png format, out-of-range maxBytes/timeoutMs,
+	 and window targets missing both appClass and titleContains.
+	 Capture path (override OR production subprocess) lands in Step 13.
+	 See plan/PLAN-PHASE-F-SCREENSHOT.md and VWBridgeScreenshotTest."
+	| spec |
+	spec := self parseAndValidateScreenshotRequest: aBodyString.
+	(spec at: 'ok') = false ifTrue: [
+		^self httpResponse: (spec at: 'status') type: 'application/json'
+			body: (self jsonScreenshotErrorBodyFor: spec)].
+	"Validation passed - capture path lands in Step 13."
+	^self httpResponse: 500 type: 'application/json'
+		body: '{"error":"screenshot-not-yet-implemented","message":"validation passed but capture path lands in Step 13 - see plan/PLAN-PHASE-F-SCREENSHOT.md"}'!
+
+parseAndValidateScreenshotRequest: aBodyString
+	"Parse + validate /screenshot JSON body. Returns Dictionary with key
+	 'ok' (true|false).
+	 On ok=true: 'targetType' ('screen'|'window'), 'format' ('png'),
+	   'maxBytes' (Int in 1..16777216), 'timeoutMs' (Int in 1..30000),
+	   and for window: 'appClass' (String or nil), 'titleContains' (String or nil).
+	 On ok=false: 'status' (HTTP status code 400 or 415),
+	   'error' (string code from F1 spec error catalog), 'message' (detail).
+	 Defaults: format='png', maxBytes=16777216, timeoutMs=10000.
+	 'target' field is REQUIRED (no default to {type:screen}) so empty body
+	 {} returns 400 - matches test #1 expectation."
+	| parsed target type format maxBytes timeoutMs result appClass titleContains |
+	parsed := [self jsonParseFlat: aBodyString] on: self errorClass do: [:ex | nil].
+	parsed == nil ifTrue: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'malformed JSON body'].
+	(parsed isKindOf: Core.Dictionary) ifFalse: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'request body must be a JSON object'].
+	"target REQUIRED (no implicit screen-default) - empty body is invalid."
+	target := parsed at: 'target' ifAbsent: [nil].
+	(target isKindOf: Core.Dictionary) ifFalse: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'missing or non-object target field'].
+	type := target at: 'type' ifAbsent: [nil].
+	(type = 'screen' or: [type = 'window']) ifFalse: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'target.type must be ''screen'' or ''window'''].
+	"format default 'png'; only 'png' supported in v1 (415 on others)."
+	format := parsed at: 'format' ifAbsent: ['png'].
+	format = 'png' ifFalse: [
+		^self screenshotErrorWithCode: 'screenshot-unsupported-format'
+			status: 415 message: 'only png format supported in v1; received ' , format printString].
+	"maxBytes default 16777216 (16 MiB); must be Int in [1, 16777216]."
+	maxBytes := parsed at: 'maxBytes' ifAbsent: [16777216].
+	(maxBytes isKindOf: Core.Integer) ifFalse: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'maxBytes must be integer in [1, 16777216]'].
+	(maxBytes < 1 or: [maxBytes > 16777216]) ifTrue: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'maxBytes must be integer in [1, 16777216]; received ' , maxBytes printString].
+	"timeoutMs default 10000; must be Int in [1, 30000]."
+	timeoutMs := parsed at: 'timeoutMs' ifAbsent: [10000].
+	(timeoutMs isKindOf: Core.Integer) ifFalse: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'timeoutMs must be integer in [1, 30000]'].
+	(timeoutMs < 1 or: [timeoutMs > 30000]) ifTrue: [
+		^self screenshotErrorWithCode: 'invalid-screenshot-request'
+			status: 400 message: 'timeoutMs must be integer in [1, 30000]; received ' , timeoutMs printString].
+	"window target REQUIRES at least one filter (appClass OR titleContains)
+	 for deterministic resolution. Empty filter would accept any window."
+	appClass := nil.
+	titleContains := nil.
+	type = 'window' ifTrue: [
+		appClass := target at: 'appClass' ifAbsent: [nil].
+		titleContains := target at: 'titleContains' ifAbsent: [nil].
+		(appClass == nil and: [titleContains == nil]) ifTrue: [
+			^self screenshotErrorWithCode: 'invalid-screenshot-request'
+				status: 400 message: 'window target requires appClass and/or titleContains']].
+	"Build validated spec dictionary."
+	result := Core.Dictionary new.
+	result at: 'ok' put: true.
+	result at: 'targetType' put: type.
+	result at: 'format' put: format.
+	result at: 'maxBytes' put: maxBytes.
+	result at: 'timeoutMs' put: timeoutMs.
+	type = 'window' ifTrue: [
+		result at: 'appClass' put: appClass.
+		result at: 'titleContains' put: titleContains].
+	^result!
+
+screenshotErrorWithCode: errorCode status: statusCode message: aMessage
+	"Build a Dictionary marking screenshot parse/validation failure with
+	 the F1 spec error code (invalid-screenshot-request / screenshot-
+	 unsupported-format / screenshot-window-not-found / screenshot-
+	 window-ambiguous / screenshot-too-large / screenshot-timeout /
+	 screenshot-capture-failed) and matching HTTP status code."
+	| d |
+	d := Core.Dictionary new.
+	d at: 'ok' put: false.
+	d at: 'status' put: statusCode.
+	d at: 'error' put: errorCode.
+	d at: 'message' put: aMessage.
+	^d!
+
+jsonScreenshotErrorBodyFor: aFailureDict
+	"Build JSON body string for screenshot error response. Uses safeJsonFor:
+	 so any quoting/escaping edge cases in the message do not crash the
+	 handler. Shape matches the conventional bridge error envelope:
+	   {error: <code>, message: <detail>}"
+	^'{"error":' , (self safeJsonFor: (aFailureDict at: 'error')) ,
+		',"message":' , (self safeJsonFor: (aFailureDict at: 'message')) , '}'! !
 
 "v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
 Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
