@@ -1,12 +1,12 @@
 ---
 title: Phase Progress Tracker
 purpose: Live cross-session view of project progress. Updated at each session EOD when a deliverable shifts state. Complements the per-session HANDOFF docs (point-in-time) and STRATEGIC-ASSESSMENT (framing doc, rewritten only at phase boundaries).
-last_updated: 2026-06-21 (session-19 EOD)
+last_updated: 2026-06-21 (session-20 EOD)
 ---
 
 # Phase Progress Tracker
 
-This file is the **canonical cross-session view** of where each phase stands. Open it first when you want "where are we right now?" without reading through 18 HANDOFFs.
+This file is the **canonical cross-session view** of where each phase stands. Open it first when you want "where are we right now?" without reading through 19 HANDOFFs.
 
 - **Per-session detail**: see `knowledge/HANDOFF-2026-06-21-session{N}.md`
 - **Strategic framing + Phase P deliverable rationale**: see `plan/STRATEGIC-ASSESSMENT-2026-06-21.md`
@@ -14,27 +14,28 @@ This file is the **canonical cross-session view** of where each phase stands. Op
 
 ---
 
-## Quick status (session-19 EOD)
+## Quick status (session-20 EOD)
 
-- **Critical-path bottleneck**: Phase P P7 (INSTALL.md documenting the P5/P6 install paths) — depends on P6 which just shipped
-- **Most recent ship**: Phase P P6 (`VWBridge.pcl` binary parcel + `parcel-start.st` + `Start-VWBridge.ps1 -Mode FileIn|Parcel`) — session-19, verified through 5-cycle quality gate (mean 8.43s per cycle, slightly faster than P5)
-- **Session-20 first action**: Phase P P7 (INSTALL.md) — straightforward doc work documenting both FileIn and Parcel install paths now that both wrapper modes ship
-- **Phase P overall**: **~90%** complete (P1+P2(all stages+QG)+P3+P4+P5+P6 SHIPPED, P7/P8 pending)
-- **Token at EOD**: `3959511089808-65801` (parcel-mode cycle 5)
-- **vwnt.exe**: PID 7532 (parcel-mode gate cycle 5), started 6/21/2026 16:11:25. 9 vwnt.exe processes spawned across the session (5 wedge-recovery + 1 dialog-recovery + 1 mode-switch + 5-cycle gate launches).
+- **Critical-path bottleneck**: NONE for the Phase-P track — **Phase P COMPLETE**. Next bottlenecks are Phase M (MCP for VW dev) or Phase E (Playwright SDK), which can now run in parallel.
+- **Most recent ship**: Phase P P7 (`INSTALL.md` at repo root, both install paths documented) + P8 (`GET /version` endpoint + `scripts/Build-Parcel.ps1` reproducible parcel rebuild + bridge bumped v0.9.1 → v0.10.0) — session-20, verified through 5-cycle Parcel-mode quality gate (mean 9.16s per cycle).
+- **Session-21 first action**: pick between Phase M MVP, Phase E SDK kickoff, stale-doc cleanup, or long-tail housekeeping. Phase P track has no remaining critical-path work.
+- **Phase P overall**: **100%** COMPLETE (P1+P2[all stages+QG]+P3+P4+P5+P6+P7+P8 SHIPPED).
+- **Bridge version**: v0.10.0 (was v0.9.1 through session-19).
+- **Token at EOD**: `3959514441929-808187` (Parcel-mode cycle 5).
+- **vwnt.exe**: PID 7588 (Parcel-mode gate cycle 5), started 6/21/2026 17:07:17. 9 vwnt.exe processes spawned across the session (5 wedge-recovery investigating compile-on-VWB.VWBridge + 1 dry-run + cycles 2-5 of the gate).
 
 ---
 
 ## Project goals progress (4 from STRATEGIC-ASSESSMENT)
 
-| # | Goal | Baseline (session-7) | session-13 | session-17 EOD | session-18 EOD | session-19 EOD | Δ since s18 |
-|---|---|---|---|---|---|---|---|
-| 1 | Bridge / eval server | ~70% (13 endpoints; /wait + /screenshot + /select + /doubleClick + /cell + /activate all missing) | ~90% (14 endpoints; /wait + /screenshot shipped) | ~90% (stable; /select /doubleClick /cell /activate deferred to Phase H) | ~90% (no new endpoints; wrapper artifact is packaging not endpoints) | **~90%** (P6 is packaging not endpoints; /select etc. still Phase H deferred) | 0% |
-| 2 | Production-grade packaging (Phase P) | ~5% (no logging, no auto-start, no OpenAPI, no SUnit) | ~25% (NDJSON logging + 68 SUnit selectors + 7 carry-forward constraints + bug-fix arc complete) | ~60% (P1+P2+P3+P4 SHIPPED, P5 designed) | ~80% (P5 SHIPPED + verified through 5-cycle quality gate) | **~90%** (P6 SHIPPED + binary .pcl + 5-cycle quality gate; P7+P8 pending) | **+10%** |
-| 3 | Test framework (Playwright) | ~0% (no SDK) | ~0% (bridge stronger but SDK not started; gated on P) | ~0% (still gated on P) | ~0% (Phase E gated on Phase P completion; unblocked now P5 ships but no SDK code yet) | **~0%** (still gated on P completion; now P-completion is ~1 day of work) | 0% |
-| 4 | MCP server | 0% built | 0% (gated on P) | ~5% (Jasper 3-layer reference design captured session-17) | ~5% (no Phase M code yet; deployable to other developers now P5 makes bridge install-able) | **~5%** (no Phase M code yet; binary parcel install path also now ships via P6) | 0% |
+| # | Goal | Baseline (session-7) | session-13 | session-17 EOD | session-18 EOD | session-19 EOD | session-20 EOD | Δ since s19 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Bridge / eval server | ~70% (13 endpoints; /wait + /screenshot + /select + /doubleClick + /cell + /activate all missing) | ~90% (14 endpoints; /wait + /screenshot shipped) | ~90% (stable) | ~90% | ~90% | **~92%** (15 endpoints; /version added; /select etc. still Phase H deferred) | **+2%** |
+| 2 | Production-grade packaging (Phase P) | ~5% | ~25% | ~60% (P1+P2+P3+P4 SHIPPED, P5 designed) | ~80% (P5 SHIPPED) | ~90% (P6 SHIPPED) | **100% COMPLETE** (P7 INSTALL.md + P8 /version + Build-Parcel.ps1 SHIPPED; bridge v0.10.0; 5-cycle Parcel-mode gate GREEN) | **+10%** |
+| 3 | Test framework (Playwright) | ~0% | ~0% | ~0% | ~0% | ~0% | **~0%** (still 0 SDK code; UNBLOCKED — Phase P done) | 0% |
+| 4 | MCP server | 0% built | 0% | ~5% | ~5% | ~5% | **~5%** (no Phase M code yet; UNBLOCKED — Phase P done) | 0% |
 
-Goal 2 (Packaging) absorbed all session-19 ship energy — second consecutive session, Phase P from 80% → 90%. Goals 3 and 4 remain at design-only stage but P + binary parcel distribution is now in place; P7 (INSTALL.md) + P8 (/version) are documentation/endpoint work, not new infrastructure.
+Goal 2 (Packaging) absorbed session-20 — Phase P from 90% → **100% COMPLETE**. Goals 3 (Phase E) and 4 (Phase M) are now structurally unblocked: bridge is deployable to any developer machine via either FileIn or Parcel install, has documented install procedure, has /version endpoint for SDK version-pinning, and the parcel rebuild pipeline is reproducible.
 
 ---
 
@@ -45,18 +46,18 @@ Goal 2 (Packaging) absorbed all session-19 ship energy — second consecutive se
 | **A — Stabilize** | 100% | ✅ DONE | sessions 7-9 (bugs #1, #2, #4, #5, #6 + NDJSON logging) |
 | **B — /wait endpoint** | 100% | ✅ DONE | v0.9.0 session-9 + B4 10x-verified session-10 |
 | **F — /screenshot** | 100% | ✅ DONE | v0.9.1 session-13 |
-| C — API freeze + OpenAPI | ~20% | ⚙️ partially subsumed | P7 (INSTALL.md) + P8 (`/version`) cover core; standalone OpenAPI deferred to post-P |
+| C — API freeze + OpenAPI | ~25% | ⚙️ partially subsumed | P7 (INSTALL.md) + P8 (`/version`) cover the core docs+version-pinning need; standalone OpenAPI deferred to post-P |
 | D — Auto-start | 100% | ✅ SUBSUMED by P5 | Designed session-17 via Oracle; SHIPPED session-18 (Start-VWBridge.ps1+bat) |
-| **P — Packaging** | **~90%** | ⚙️ in progress (critical path) | P1+P2(S1+S2+S3+QG)+P3+P4+P5+P6 SHIPPED; P7+P8 pending |
-| M — MCP for VW dev | ~5% | ⚙️ unblocked (parallel with P7/P8) | Jasper 3-layer reference design captured; no code; P6 ship makes binary parcel deployable to other devs |
-| E — Playwright SDK + 3 tests | 0% | ⚙️ unblocked (parallel with M) | P5+P6 shipped → bridge fully deployable in 2 modes; can start SDK any time |
+| **P — Packaging** | **100%** | ✅ **COMPLETE** | P1+P2(S1+S2+S3+QG)+P3+P4+P5+P6+P7+P8 SHIPPED |
+| M — MCP for VW dev | ~5% | ⚙️ unblocked (next priority option) | Jasper 3-layer reference design captured s17; no code; bridge now fully deployable + documented |
+| E — Playwright SDK + 3 tests | 0% | ⚙️ unblocked (next priority option, parallel with M) | Bridge fully deployable in 2 modes + /version for version-pinning; can start SDK any time |
 | G — CI pipeline | 0% | ⏳ gated on E | — |
 | H — Scale (all critical workflows) | 0% | ⏳ gated on G | — |
 | I — Test Mentor migration | 0% | ⏳ gated on G | 18 MB `testCases.gs` to port |
 
 ---
 
-## Phase P deliverable breakdown (the critical bottleneck)
+## Phase P deliverable breakdown (✅ COMPLETE)
 
 | # | Deliverable | Status | Commit / blocker |
 |---|---|---|---|
@@ -67,12 +68,12 @@ Goal 2 (Packaging) absorbed all session-19 ship energy — second consecutive se
 | P2 quality gate | full SUnit suite GREEN + load/unload idempotency proven | ✅ SATISFIED session-16+17 | 48/48 unblocked via /eval direct-invoke; idempotency via 2 in-place /eval cycles |
 | P3 | PowerShell helper relocation under `$VW_BRIDGE_HOME/scripts/` | ✅ SHIPPED session-14 | `d4924c5` (same commit as P1) |
 | P4 | `load.st` + `unload.st` pair | ✅ MERGED with P2 Stage 3 ship | `cdf3876` (Stage 3 commit) |
-| P5 | auto-start trigger mechanism | ✅ SHIPPED session-18 (Start-VWBridge.ps1 + Start-VWBridge.bat via `vwnt.exe -filein`) | 5-cycle quality gate GREEN (mean 9.11s/cycle, all PID rotated, all token rotated, all useNativeDialogs toggled) |
-| **P6** | build `.pcl` parcel via `Kernel.Parcel loadParcelFrom: aFilename` | ✅ **SHIPPED** session-19 (VWBridge.pcl 52KB + VWBridge.pst 128KB + parcel-start.st + Start-VWBridge.ps1 -Mode FileIn\|Parcel) | 5-cycle parcel-mode quality gate GREEN (mean 8.43s/cycle, slightly faster than P5). Built via Cursor>>showWhile: monkey-patch + canonical `Kernel.Parcel>>parcelOutOn:withSource:hideOnLoad:republish:backup:` |
-| P7 | `INSTALL.md` (env-var setup + parcel load + smoke test) | ⏳ pending | depends on P6 ✓; documents both FileIn and Parcel install paths |
-| P8 | `GET /version` endpoint (parcel version + build timestamp + commit SHA) | ⏳ pending | depends on P6 ✓; parcel version metadata now available |
+| P5 | auto-start trigger mechanism | ✅ SHIPPED session-18 (Start-VWBridge.ps1 + Start-VWBridge.bat via `vwnt.exe -filein`) | 5-cycle quality gate GREEN (mean 9.11s/cycle) |
+| P6 | build `.pcl` parcel via `Kernel.Parcel loadParcelFrom: aFilename` | ✅ SHIPPED session-19 (VWBridge.pcl 52KB + VWBridge.pst 128KB + parcel-start.st + Start-VWBridge.ps1 -Mode FileIn\|Parcel) | 5-cycle parcel-mode gate GREEN (mean 8.43s); built via Cursor>>showWhile: monkey-patch + canonical parcelOutOn: |
+| **P7** | `INSTALL.md` (env-var setup + both install paths + smoke test + troubleshooting) | ✅ **SHIPPED** session-20 | Repo-root INSTALL.md covers FileIn + Parcel paths for onboarding-developer with zero prior context |
+| **P8** | `GET /version` endpoint (parcel version + build timestamp + commit SHA) | ✅ **SHIPPED** session-20 | Endpoint auth-exempt, 4-field JSON (version + buildCommitSha + buildTimestamp + parcelMode); bridge bumped v0.9.1 → v0.10.0; `scripts/Build-Parcel.ps1` reproducible rebuild; new VWBridge.pcl 53KB + VWBridge.pst 131KB; 5-cycle Parcel-mode gate GREEN (mean 9.16s) |
 
-**P6 design preserved in memory entities** `Phase-P-P6-shipped` + `Cursor-showWhile-monkeypatch-technique` (the reusable headless-build pattern that resolves any UI-wrapped canonical API call). VWBridge-Tests.pcl deferred (wedged on 3-class build) — not on production critical path.
+**Design note on P8 build metadata**: attempted to bake commitSha + timestamp as compiled-literal class-side methods on VWB.VWBridge before `addEntiretyOfClass:`, but `compile:` on VWB.VWBridge wedges the bridge listener even with the Cursor>>showWhile: monkey-patch installed (new carry-forward #41). Shipped instead with class-side accessors + setters that `Start-VWBridge.ps1` /eval-injects at every cold-start in both modes — `/version` reflects "what is currently running" rather than "when was the parcel built". For parcel-build provenance, use `git log parcels/VWBridge.pcl`. Memory entities: `Phase-P-P7-P8-shipped`, `compile-on-VWB-VWBridge-wedge`.
 
 ---
 
@@ -81,14 +82,14 @@ Goal 2 (Packaging) absorbed all session-19 ship energy — second consecutive se
 Critical path:
 
 ```
-Phase P (90% done — P7 + P8 only)
+Phase P (100% COMPLETE)
     │
     ├──► Phase M (MCP for VW dev) ─┐
-    │    (~5% done; gated on P)     │
+    │    (~5% done; UNBLOCKED)      │
     │                               ├──► Onboarding developer can use AI on VW
     │                               │    (first user-visible milestone)
     └──► Phase E (Playwright SDK) ──┘
-         (0% done; gated on P)
+         (0% done; UNBLOCKED)
               │
               ▼
          Phase G (CI pipeline; gated on P + E)
@@ -106,20 +107,20 @@ Phase P (90% done — P7 + P8 only)
 
 | Phase | Remaining effort | Notes |
 |---|---|---|
-| P (P7 + P8) | **~1-1.5 days** | P7 = 1 day docs (INSTALL.md covering both FileIn + Parcel modes); P8 = 0.5 day endpoint. P6 ship reduced this from session-18's ~2-3 days. |
-| M (MCP MVP — 3-tool surface) | ~2-3 days | 3-layer architecture per Jasper reference. Unblocked. |
-| E (SDK + 3 Playwright tests) | ~1-2 weeks | Unblocked. Parallel with M. |
+| P | **0** | ✅ COMPLETE |
+| M (MCP MVP — 3-tool surface) | ~2-3 days | 3-layer architecture per Jasper reference. UNBLOCKED. |
+| E (SDK + 3 Playwright tests) | ~1-2 weeks | UNBLOCKED. Parallel with M. /version endpoint enables SDK version-pinning. |
 | G (CI pipeline — first green run) | ~1 week | After E ships. |
 | H (Scale all critical workflows) | weeks-to-months | Throughput phase; pace = SDK + CI velocity. |
-| I (Test Mentor migration) | open-ended | 18 MB `testCases.gs` to port; depends on accepted scope (full vs critical-path-subset). |
+| I (Test Mentor migration) | open-ended | 18 MB `testCases.gs` to port; depends on accepted scope. |
 
 ### Near-term milestones
 
 | Milestone | Earliest possible | Gating |
 |---|---|---|
-| Onboarding developer can self-install + use AI on VW | **~3-5 days** | P7 + M MVP (P5+P6 done; binary parcel distribution ready) |
-| First green Playwright test in CI | **~3-4 weeks** | P + E + G |
-| Test Mentor decommissioned | open-ended | P + E + G + H + I |
+| Onboarding developer can self-install + use AI on VW | **~2-3 days** | Phase M MVP (Phase P done — install + docs + /version all in place) |
+| First green Playwright test in CI | **~3-4 weeks** | E + G |
+| Test Mentor decommissioned | open-ended | E + G + H + I |
 
 ---
 
@@ -139,8 +140,9 @@ Phase P (90% done — P7 + P8 only)
 | 16 | 2026-06-21 | Systematic gate sweep COMPLETE (48/48 unblocked GREEN); 2 latent bug fixes; 3 new techniques; 5 new carry-forward (24-28); P2 quality gate SATISFIED | v0.9.1 | 10 pushed | P2 quality gate done |
 | **17** | 2026-06-21 | Phase P P2 Stage 3 SHIPPED (load.st + unload.st + auto-start chunk removal); quality gate idempotency PROVEN via 2 in-place /eval cycles; P5 Oracle consult COMPLETE (Path 4 wrapper design); Jasper mining synthesized; 3 new carry-forward (29-31) | v0.9.1 | 4 pushed | P at ~60%, P5 BLOCKED on session-18 -filein probe |
 | **18** | 2026-06-21 | Phase P P5 SHIPPED (Start-VWBridge.ps1 + Start-VWBridge.bat via `vwnt.exe -filein` switch); 6 probes verified -filein syntax (AppDevGuide.pdf p36) + ImageConfigurationSystem allow-flag state + top-level `^` chunk semantics; 5-cycle quality gate GREEN (mean 9.11s/cycle); 3 new carry-forward (32-34); AGENTS.md cold-start path replaced | v0.9.1 | 7 pushed | P at ~80%, P6 next on critical path |
-| **19** | 2026-06-21 | **Phase P P6 SHIPPED (VWBridge.pcl 52KB binary parcel + VWBridge.pst companion + parcel-start.st + Start-VWBridge.ps1 -Mode FileIn\|Parcel); Cursor>>showWhile: monkey-patch + canonical parcelOutOn: pattern PROVEN; 24 probes + Oracle consult + research (pypdf VW docs + websearch); 5-cycle parcel-mode quality gate GREEN (mean 8.43s/cycle, faster than P5); 6 new carry-forward (35-40); 9 bridge recoveries during empirical investigation; VWBridge-Tests.pcl DEFERRED (wedged on 3-class build, not on critical path)** | **v0.9.1** | **TBD pushed** | **P at ~90%, P7 (INSTALL.md) next** |
-| _(20)_ | _(TBD)_ | _Phase P P7 (INSTALL.md) + maybe P8 (/version endpoint)_ | _(v0.10.0 likely)_ | — | _Phase P COMPLETE target_ |
+| **19** | 2026-06-21 | **Phase P P6 SHIPPED (VWBridge.pcl 52KB binary parcel + VWBridge.pst companion + parcel-start.st + Start-VWBridge.ps1 -Mode FileIn\|Parcel); Cursor>>showWhile: monkey-patch + canonical parcelOutOn: pattern PROVEN; 24 probes + Oracle consult + research (pypdf VW docs + websearch); 5-cycle parcel-mode quality gate GREEN (mean 8.43s/cycle, faster than P5); 6 new carry-forward (35-40); 9 bridge recoveries during empirical investigation; VWBridge-Tests.pcl DEFERRED (wedged on 3-class build, not on critical path)** | **v0.9.1** | **5 pushed** | **P at ~90%, P7 (INSTALL.md) next** |
+| **20** | 2026-06-21 | **Phase P P7+P8 SHIPPED — Phase P COMPLETE. P7: INSTALL.md at repo root (~400 lines, both FileIn + Parcel paths + troubleshooting + uninstall). P8: GET /version endpoint (auth-exempt, 4-field JSON returning version + buildCommitSha + buildTimestamp + parcelMode); bridge bumped v0.9.1 → v0.10.0; class-side version + buildCommitSha/buildTimestamp/parcelMode accessors+setters; Start-VWBridge.ps1 /eval-injects all 3 build-info fields at cold-start in both modes (Get-GitHeadSha pure-PS helper reads .git/HEAD directly, no git CLI dependency); scripts/Build-Parcel.ps1 reproducible rebuild via Cursor monkey-patch + verbatim s19 parcel pattern; new VWBridge.pcl 53KB + VWBridge.pst 131KB ship-built; 5-cycle Parcel-mode quality gate GREEN (mean 9.16s); 2 new carry-forward (41-42 — compile-on-VWB.VWBridge wedge + ensure-block no-binding); 5 bridge recoveries investigating bake-metadata approach (abandoned for simpler design)** | **v0.10.0** | **TBD pushed** | **P at 100% COMPLETE; M or E next** |
+| _(21)_ | _(TBD)_ | _Phase M MVP OR Phase E SDK kickoff (parallel-eligible)_ | _(v0.10.x)_ | — | _Onboarding milestone advance_ |
 | _(future)_ | — | _Phase P COMPLETE (P7 + P8)_ | _(v0.10.0)_ | — | _Onboarding milestone unblocked_ |
 | _(future)_ | — | _Phase M ship (MCP for VW dev)_ | — | — | _Onboarding developer milestone_ |
 | _(future)_ | — | _Phase E ship (first green Playwright test)_ | — | — | _Test framework starts_ |
@@ -159,7 +161,8 @@ Phase P (90% done — P7 + P8 only)
 | session-16 | 28 | EndOfStreamNotification fileIn trap (24), Direct-invoke v2 Notification-resume (25), Namespace at:put: Notification (26), ByteArray-aware test helpers (27), HTTP /eval Bug #5 inherent limit (28) |
 | session-17 | 31 | load.st/unload.st external orchestrators (29), in-place unload+load+verify via single /eval call (30), removeSelector: naturally defensive (31) |
 | session-18 | 34 | Dialog asymmetric setter/getter (32), `-filein` switch + ImageConfigurationSystem allow-flags verified (33), `-err` Runtime-Packager-only (34) |
-| **session-19** | **40** | **Cursor>>showWhile: wedge + monkey-patch (35), createParcelNamed: returns empty parcel (36), parcelOutOn:withSource: is Filename arg (37), removeParcelNamed: raises Notification (38), CodeWriter is binary write engine (39), parcel write embeds .pst path reference (40)** |
+| session-19 | 40 | Cursor>>showWhile: wedge + monkey-patch (35), createParcelNamed: returns empty parcel (36), parcelOutOn:withSource: is Filename arg (37), removeParcelNamed: raises Notification (38), CodeWriter is binary write engine (39), parcel write embeds .pst path reference (40) |
+| **session-20** | **42** | **compile: on VWB.VWBridge class wedges bridge even with Cursor monkey-patch (41), ensure: block referencing VWB.VWBridge after parcelOutOn: raises "no binding" (42)** |
 
 Full carry-forward catalog: [`knowledge/vw-image-api-contract.md`](../knowledge/vw-image-api-contract.md).
 
@@ -173,7 +176,8 @@ Full carry-forward catalog: [`knowledge/vw-image-api-contract.md`](../knowledge/
 | session-16 | 12 | 24 | Session-16, Latent-screenshot-test-helper-bug, EndOfStreamNotification-fileIn-trap, Namespace-at-put-binding-notification |
 | session-17 | 24 | 42 | Session-17, In-place-unload-load-quality-gate-test (technique), load-unload-orchestrators (technique), Phase-P-P5-Oracle-recommendation (decision-record) |
 | session-18 | 24 | 42 | No new entities; +~20 observations across Phase-P-P5-Oracle-recommendation (probe results + 5-cycle gate), VW-image-storedev64 (ImageConfigurationSystem + allow-flags + asymmetric Dialog selectors + PID rotation), Phase-P-progress (P5 SHIPPED), ammaganyane (decisions) |
-| **session-19** | **27** | **47** | **+3 entities: Session-19-2026-06-21, parcelOutOn-wedges-bridge-via-showWhile (code-bug), Cursor-showWhile-monkeypatch-technique (technique), Phase-P-P6-shipped (milestone); +5 relations: discovers/delivers/advances/enables/resolves; +~40 observations across new + existing entities (VW-image-storedev64 parcel API, Phase-P-progress P6 SHIPPED, etc.)** |
+| session-19 | 27 | 47 | +3 entities: Session-19-2026-06-21, parcelOutOn-wedges-bridge-via-showWhile (code-bug), Cursor-showWhile-monkeypatch-technique (technique), Phase-P-P6-shipped (milestone); +5 relations: discovers/delivers/advances/enables/resolves; +~40 observations across new + existing entities (VW-image-storedev64 parcel API, Phase-P-progress P6 SHIPPED, etc.) |
+| **session-20** | **30** | **52** | **+3 entities: Session-20-2026-06-21, Phase-P-P7-P8-shipped (milestone — Phase P COMPLETE), compile-on-VWB-VWBridge-wedge (code-bug); +5 relations: Session-20 delivers Phase-P-P7-P8-shipped, Phase-P-P7-P8-shipped completes Phase-P-progress, compile-wedge affects parcel-build, Session-20 discovers compile-wedge, Phase-P-P7-P8-shipped advances tm-context-vw-bridge; +~25 observations across new + existing entities (VW-image-storedev64 compile wedge + ensure-block no-binding, Phase-P-progress P7+P8 SHIPPED, ammaganyane session-20 decisions)** |
 
 ---
 
