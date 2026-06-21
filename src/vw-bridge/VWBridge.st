@@ -2256,7 +2256,21 @@ handleScreenshotBody: aBodyString
 		outcome := screenshotCaptureOverride value: spec value: rect.
 		(outcome isKindOf: Core.Dictionary) ifTrue: [
 			(outcome at: 'ok' ifAbsent: [false]) = true ifTrue: [
-				| extraHdrs |
+				| pngBytes maxBytes extraHdrs |
+				pngBytes := outcome at: 'pngBytes'.
+				maxBytes := spec at: 'maxBytes'.
+				"Step 14: post-capture size cap. F1 spec mandates 413 with
+				 screenshot-too-large error code if encoded PNG exceeds the
+				 caller's maxBytes (default + hard cap = 16777216 = 16 MiB).
+				 No automatic downscaling - pathological capture is REJECTED
+				 not silently corrupted (preserves forensic fidelity)."
+				pngBytes size > maxBytes ifTrue: [
+					| errSpec |
+					errSpec := self screenshotErrorWithCode: 'screenshot-too-large'
+						status: 413
+						message: 'encoded PNG size ' , pngBytes size printString , ' bytes exceeds maxBytes ' , maxBytes printString.
+					^self httpResponse: 413 type: 'application/json'
+						body: (self jsonScreenshotErrorBodyFor: errSpec)].
 				extraHdrs := Core.OrderedCollection new.
 				extraHdrs add: 'Cache-Control: no-store'.
 				extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
@@ -2264,7 +2278,7 @@ handleScreenshotBody: aBodyString
 				extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
 				extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
 				^self httpBinaryResponse: 200 type: 'image/png'
-					body: (outcome at: 'pngBytes') extraHeaders: extraHdrs]]].
+					body: pngBytes extraHeaders: extraHdrs]]].
 	"Production capture path - lands in Step 17."
 	^self httpResponse: 500 type: 'application/json'
 		body: '{"error":"screenshot-not-yet-implemented","message":"production capture path lands in Step 17"}'!
