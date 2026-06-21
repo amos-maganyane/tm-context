@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-21 (session-17, after Phase P P2 Stage 3 ship: load.st + unload.st external orchestrators + in-place quality-gate idempotency proven via 2 consecutive single-/eval-call cycles)
-source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17
+last_verified: 2026-06-21 (session-18, after Phase P P5 ship: Start-VWBridge.ps1+bat wrapper via vwnt.exe -filein switch verified through 5-cycle quality gate; AppDevGuide.pdf p36 documents -filein verbatim; ImageConfigurationSystem allowFilein=true in this MAS image)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -587,7 +587,131 @@ The UNLOAD section uses direct `VWB.VWBridge` refs — works because the class e
 
 ### Cold-start exception now uses `load.st` instead of `VWBridge.st`
 
-Per AGENTS.md cold-start exception, the FIRST file-in when bridge is dead requires VW Workspace paste (no `/eval` available). Pre-session-17 this was `VWBridge.st` (which auto-started). Post-session-17 this is `load.st` (which orchestrates the 5 file-ins + `start` + `.token` write). Phase P P5 will eliminate this manual step via external auto-start trigger (Topaz stdin / CLI arg / file watcher).
+Per AGENTS.md cold-start exception, the FIRST file-in when bridge is dead requires VW Workspace paste (no `/eval` available). Pre-session-17 this was `VWBridge.st` (which auto-started). Post-session-17 this is `load.st` (which orchestrates the 5 file-ins + `start` + `.token` write). **Session-18 SHIPPED Phase P P5** — [`Start-VWBridge.ps1`](../src/vw-bridge/scripts/Start-VWBridge.ps1) + [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) wrap `vwnt.exe -filein <generated-chunk>` so the Workspace paste step is no longer the primary cold-start path; it lives on as the emergency fallback only.
+
+---
+
+## Phase P P5 — `Start-VWBridge.ps1` wrapper via `vwnt.exe -filein` (session-18)
+
+`vwnt.exe -filein <chunk-file>` is the officially-documented VW image-level command-line switch for filing in Smalltalk source at image startup (AppDevGuide.pdf p36, verified against `C:\visualworks931\doc\AppDevGuide.pdf` shipping with this exact install). Verified empirically through a 5-cycle quality gate session-18: every cycle ~9.1s end-to-end, all green.
+
+### Image-level switches available in this MAS image
+
+`Core.ImageConfigurationSystem` (top-level, env=Core; one instance) gates which image-level switches are honored. Probed session-18:
+
+| Flag instVar | Value in MAS | Gates switch |
+|---|---|---|
+| `allowFilein` | **true** | `-filein` |
+| `allowExpressions` | **true** | `-doit`, `-evaluate` |
+| `allowParcelLoading` | **true** | `-pcl`, `-cnf`, `-psp` (good for P6 parcel load) |
+| `allowSettings` | false | `-settings` |
+| `useDefaultConfigFile` | false | auto-load of default config |
+| `allowDevelopment` | false | dev-mode features |
+
+The 12 class-side selectors on `ImageConfigurationSystem` are the 6 accessor/mutator pairs above. `allowSettings=false` means `-settings <xml>` is silently rejected even though the switch parser sees it. `allowFilein=true` confirms the MAS deployment did NOT lock down `-filein`.
+
+`Core.CommandLineInterest` is also present (15 class-side, 16 instance-side selectors) — the pragma/event mechanism documented on AppDevGuide.pdf p469. Zero active subscribers in this image.
+
+Documented image-level switches (from AppDevGuide.pdf p35-36, p449, p481):
+
+| Switch | Documented behavior | Status in MAS | Source |
+|---|---|---|---|
+| `-listOptions` | Lists all image-level switches in this image | available (requires Headless) | p35 |
+| `-pcl parcelFile [parcelFile...]` | Load parcel(s) at startup | allowed | p36 |
+| `-cnf configFile [configFile...]` | Load parcels named in config file | allowed | p36 |
+| `-psp dir1 dir2 ...` | Set parcel search path | allowed (with -pcl) | p36 |
+| `-filein fileNames` | File in Smalltalk source (*.st) | **allowed** | **p36** |
+| `-settings fileNames` | Load XML settings | BLOCKED (allowSettings=false) | p36 |
+| `-doit stringArgs` | Evaluate expression(s); image continues running | allowed | p36 |
+| `-evaluate stringArg` | Evaluate single expr, print result, exit | allowed | p36 |
+| `-err errorFile` | Set error log path | Runtime-Packager-only (silent no-op here, see #34) | p481 |
+| `-notifier notifierClass` | Set unhandled-exception notifier | Runtime-Packager-only | p481 |
+| `-transcript aFileName` | Redirect Transcript output to file | not probed | p36 |
+| `-headless` | Run headless | not probed | p527 |
+| `-terminate-on-error` | Save headfull on error | not probed | p449 |
+| `-no-terminate-on-error` | Inverse | not probed | p449 |
+| `-nohlstrc` | Skip startup file | not probed | p449 |
+
+Generic command syntax (p35): `<oe> [oe-switches] <image-name> [image-switches]`. Image name MUST precede image switches. Working examples (p214-215):
+
+```
+..\bin\win\vwnt.exe visual.im -pcl UIPainter
+..\bin\win\vwnt.exe visual.im -cnf HotDraw.txt
+..\bin\win\vwnt.exe visual.im -psp ..\goodies\other\HotDraw -cnf HotDraw.txt
+```
+
+### Chunk-wrap design (`Start-VWBridge.ps1`)
+
+[`load.st`](../src/vw-bridge/load.st) is a do-it expression block (NOT chunk-formatted). `-filein` reads chunk-format files (chunks separated by `!`). To bridge the format gap, the wrapper writes a single-chunk wrapped file to `$VW_BRIDGE_HOME/.generated/load-startup.st`:
+
+```
+<load.st body bytes (4133 bytes, LF-only)>
+\r\n
+!
+\r\n
+```
+
+Total 4138 bytes ASCII (no BOM — chunk parser is byte-oriented and rejects UTF-8 BOM). Trailing `\r\n!\r\n` makes the body one complete chunk. Top-level `^` inside the chunk is **silently consumed** when read via `'path' asFilename fileIn` (verified session-18 probe D) — `load.st`'s closing `^'[load.st] OK token=...'` works fine; chunk file-in semantics match `/eval` semantics for the top-level method-return.
+
+**Preflight assertion**: `load.st` must contain ZERO `!` characters. The wrapper byte-scans `load.st` before each launch and exits code 4 if any `!` found (otherwise the chunk-wrap would split into two chunks at the first `!` and break startup).
+
+### Launch invocation
+
+```powershell
+Start-Process -FilePath 'C:\visualworks931\bin\win64\vwnt.exe' `
+              -ArgumentList @(
+                  'C:\visualworks931\image\storedev64.im',
+                  '-filein', $generatedChunk,
+                  '-err', $errFile
+              ) `
+              -WorkingDirectory 'C:\visualworks931\image'
+```
+
+Working directory must be the image dir (per session-9: that's where the `.cha` changes file is locked). Image name precedes switches. `-err` is Runtime-Packager-only (constraint #34) — silently no-op in this image, but harmless on the command line and the wrapper handles missing err-file gracefully.
+
+### Wrapper preflight + idempotency + verification
+
+The PS1 script (~260 lines) implements the 8 failure modes Oracle flagged session-17 plus 2 found session-18:
+
+1. `VW_BRIDGE_HOME` missing → resolved at Process / User / Machine env scopes; exit 2 if all empty
+2. `vwnt.exe` / `storedev64.im` / `load.st` missing → exit 3
+3. `load.st` contains `!` → exit 4 (preflight byte-scan)
+4. Existing `vwnt.exe` running + `-KillExisting` flag → kill cleanly, wait 2s for port 9876 to clear
+5. Already-running bridge (default) → idempotent exit 0 with `/health` echo
+6. `vwnt.exe` exits before `/health` 200 → tail err file, exit 5
+7. `/health` doesn't respond within timeout (default 90s) → exit 5
+8. `.token` doesn't rotate (load.st step 5 failed) → exit 6
+9. Post-launch `Smalltalk.Dialog useNativeDialogs: false` toggle via `/eval` (Bug #2 fix gate)
+10. Asymmetric Dialog getter/setter (see constraint #32) — verification uses the setter side
+
+Default behavior: idempotent. Re-running the wrapper while bridge is up returns 0 silently. `-KillExisting` flag is the explicit destructive opt-in for quality-gate cycling.
+
+### Quality gate (session-18, Oracle's 5-cycle spec)
+
+5 consecutive cold-start cycles passed:
+
+| Cycle | Elapsed | PID transition | Token tail | All verifications |
+|---|---|---|---|---|
+| 1 (dry-run) | 9.54s | 6236 → 1980 | -282335 → -257889 | ✓ |
+| 2 | 8.60s | 1980 → 5000 | -257889 → -564079 | ✓ |
+| 3 | 8.65s | 5000 → 8784 | -564079 → -163522 | ✓ |
+| 4 | 9.64s | 8784 → 5776 | -163522 → -199161 | ✓ |
+| 5 | 9.14s | 5776 → 8584 | -199161 → -199161 (token-suffix repeat — see below) | ✓ |
+
+Mean 9.11s end-to-end. /health 200 in 3 polls (1500ms) every cycle. VWB.VWBridge identity invariants (env=#VWB, top-level=nil, 4 classes, SimpleDialog override, `usesNativeDialogs`=false) preserved through every cycle.
+
+**Token-tail repeat (cycle 4 → cycle 5)**: both ended `-199161`. Token is `<timestamp>-<random>` shape; high (timestamp) part advanced cleanly each cycle, low (random) part happens to repeat. As-a-whole tokens still distinct (cycle 4 `3959506086034-199161` vs cycle 5 `3959506095072-199161`). Not a regression but worth flagging — may warrant future probe of token-random entropy.
+
+### Cold-start path table (post-session-18)
+
+| Scenario | Path |
+|---|---|
+| Default cold-start | [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) (or `.ps1` directly) |
+| Quality-gate cycling | `Start-VWBridge.ps1 -KillExisting` |
+| Wrapper buggy / emergency fallback | VW Workspace paste of [`load.st`](../src/vw-bridge/load.st) body (AGENTS.md cold-start exception persists for recovery only) |
+| Reload while bridge UP | POST `load.st` content as `/eval` body (idempotent) |
+| In-image quality-gate test | In-place unload+load+verify single-/eval-call pattern (session-17 technique, still useful for fast iteration without process restart) |
+| P6 parcel load (future) | Same wrapper, switch `-filein <generated>` → `-pcl <parcel-path>` |
 
 ---
 
@@ -830,6 +954,9 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **`load.st` / `unload.st` external orchestrators (session-17 Stage 3)**: `VWBridge.st` no longer auto-starts. [`src/vw-bridge/load.st`](../src/vw-bridge/load.st) orchestrates env-var resolve + 5-file file-in + `VWB.VWBridge start` + `.token` write; [`src/vw-bridge/unload.st`](../src/vw-bridge/unload.st) is the inverse defensive cleanup (capture tokenPath → stop bridge → delete .token → remove SimpleDialog override → remove 4 VWB classes reverse-dep → remove empty VWB namespace). Cold-start exception now goes through `load.st` (was `VWBridge.st`). Parcel-readiness prerequisite for P6 satisfied. See [Phase P P2 Stage 3](#phase-p-p2-stage-3--loadst--unloadst-orchestrators-session-17) section.
 - **In-place unload+load+verify via single `/eval` call (session-17)**: The `/eval` handler runs on a forked process and SURVIVES listener termination — can re-create the bridge inline within the same `/eval` body. Pattern: pre-snapshot → unload body (kills listener) → post-unload snapshot → load body (use dynamic `Smalltalk at: #VWB` lookups for the start step to avoid stale compile-time bindings) → post-load snapshot → assert 6 gate predicates. Saves the Workspace cold-start round-trip for quality-gate testing. Idempotency proven via 2 consecutive cycles in session-17 (token rotated 3×, bridge survived 3 listener-recycle events without wedge).
 - **`removeSelector:` is naturally defensive on absent selector** (session-17 verified): `Object removeSelector: #absent` returns without raising; same for `SimpleDialog removeSelector: #absent`. The defensive `on: Core.Error do: [:ex | nil]` wrap is belt-and-suspenders but not strictly required for `removeSelector:`. Combined with constraints #12 (`class removeFromSystem`) + #13 (`NameSpace removeFromSystem` on empty namespace) and `tokenPath asFilename delete` defensive guard, the unload.st sequence is fully idempotent across multiple invocations.
+- **`Smalltalk.Dialog` has asymmetric setter/getter for native-dialogs flag** (session-18): setter is `useNativeDialogs:` (keyword, 1-arg) — what AGENTS.md cold-start step 3 references and what the Phase P P5 wrapper calls post-launch. Getter is `usesNativeDialogs` (unary, with an EXTRA 's' in 'uses', returns Boolean). The expected symmetric getter `useNativeDialogs` (no extra 's') does NOT exist and raises `MessageNotUnderstood` on probe. Verification probes must use the asymmetric form: `(Dialog class canUnderstand: #useNativeDialogs:)` for setter presence, `Dialog usesNativeDialogs` for current value.
+- **`vwnt.exe -filein <chunk-file>` switch + `ImageConfigurationSystem` allow-flag state** (session-18 SHIPPED Phase P P5): `-filein` documented verbatim on `C:\visualworks931\doc\AppDevGuide.pdf` p36 + verified through 5-cycle quality gate (mean 9.11s per cycle, /health 200 in 1500ms). Behavior: takes one or more `.st` chunk files; image continues running after file-in (unlike `-evaluate` which exits). Generic syntax: `<oe> [oe-switches] <image-name> [image-switches]` — image name MUST precede switches. `Core.ImageConfigurationSystem` gates which image-level switches are honored per allow-flag (probe F session-18): allowFilein=true, allowExpressions=true, allowParcelLoading=true (good for P6 -pcl), allowSettings=false, allowDevelopment=false, useDefaultConfigFile=false. Top-level `^` in chunk file-in is silently consumed (probe D session-18) — same as `/eval` for `'path' asFilename fileIn`. See [Phase P P5 section](#phase-p-p5--start-vwbridgeps1-wrapper-via-vwntexe--filein-session-18) for the wrapper design + switch table.
+- **`-err errorFile` is Runtime-Packager-only** (session-18 surprise): per AppDevGuide.pdf p481, `-err` and `-notifier notifierClass` are listed under "Runtime Packager installs two additional command-line options". In non-RuntimePackager images (like ours), the switch is silently accepted but the error file is NEVER created. Phase P P5 wrapper passes `-err <errfile>` defensively but handles missing file gracefully. Means we have ZERO startup-side stderr visibility without an alternative redirect mechanism (e.g., piping via `Start-Process -RedirectStandardError`, which requires non-detached process spawning and is incompatible with our detached-launch design).
 
 ---
 
