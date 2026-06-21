@@ -2256,7 +2256,15 @@ handleScreenshotBody: aBodyString
 		outcome := screenshotCaptureOverride value: spec value: rect.
 		(outcome isKindOf: Core.Dictionary) ifTrue: [
 			(outcome at: 'ok' ifAbsent: [false]) = true ifTrue: [
-				^self httpBinaryResponse: 200 type: 'image/png' body: (outcome at: 'pngBytes')]]].
+				| extraHdrs |
+				extraHdrs := Core.OrderedCollection new.
+				extraHdrs add: 'Cache-Control: no-store'.
+				extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
+				extraHdrs add: 'X-VWBridge-Screenshot-Target: ' , (spec at: 'targetType').
+				extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
+				extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
+				^self httpBinaryResponse: 200 type: 'image/png'
+					body: (outcome at: 'pngBytes') extraHeaders: extraHdrs]]].
 	"Production capture path - lands in Step 17."
 	^self httpResponse: 500 type: 'application/json'
 		body: '{"error":"screenshot-not-yet-implemented","message":"production capture path lands in Step 17"}'!
