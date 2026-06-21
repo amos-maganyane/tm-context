@@ -1,8 +1,8 @@
 ---
 title: VW Image API Contract — MAS storedev64 image
 purpose: Probe-derived reference for the live VisualWorks image at C:\visualworks931\image\storedev64.im. Read BEFORE writing new /eval probes or assuming standard VW API surface.
-last_verified: 2026-06-21 (session-19, after Phase P P6 ship: VWBridge.pcl + VWBridge.pst binary parcel artifacts at src/vw-bridge/parcels/; Start-VWBridge.ps1 supports -Mode FileIn|Parcel; canonical Kernel.Parcel>>parcelOutOn: invocation enabled via Cursor>>showWhile: monkey-patch + methodDictionary restore; 5-cycle quality gate GREEN mean 8.43s/cycle)
-source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19
+last_verified: 2026-06-21 (session-20, after Phase P P7+P8 ship: INSTALL.md at repo root documenting FileIn + Parcel install paths; GET /version endpoint (auth-exempt) returning {version, buildCommitSha, buildTimestamp, parcelMode}; bridge bumped v0.9.1 → v0.10.0; class-side version/buildCommitSha/buildTimestamp/parcelMode accessors + setters; Start-VWBridge.ps1 /eval-injects build metadata in both modes at cold-start; scripts/Build-Parcel.ps1 reproducible parcel rebuild pipeline; new VWBridge.pcl 53,305 bytes + VWBridge.pst 130,811 bytes; 5-cycle Parcel-mode quality gate GREEN mean 9.16s)
+source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20
 ---
 
 # VW Image API Contract — MAS `storedev64.im`
@@ -840,6 +840,141 @@ See the constraint summary at the end of this doc:
 
 ---
 
+## Phase P P7+P8 — INSTALL.md + GET /version endpoint (session-20)
+
+Phase P COMPLETE session-20 with two paired ships: (P7) `INSTALL.md` at repo root documenting both FileIn and Parcel install paths for an onboarding developer; (P8) `GET /version` endpoint returning bridge release version + cold-start git HEAD SHA + cold-start UTC timestamp + active install mode. Bridge bumped v0.9.1 → v0.10.0. `scripts/Build-Parcel.ps1` shipped as the reproducible parcel rebuild pipeline.
+
+### /version endpoint shape
+
+```
+GET /version
+→ 200 OK application/json
+  {"version":"0.10.0","buildCommitSha":"<40-char git SHA>","buildTimestamp":"<ISO-8601 UTC>","parcelMode":"FileIn|Parcel"}
+```
+
+Auth-exempt — like `/health`, no token required. Suitable for liveness/version checks from monitoring, CI, container healthchecks, SDK version-pinning.
+
+Fields:
+
+| Field | Source | Semantics |
+|---|---|---|
+| `version` | `VWB.VWBridge class>>version` literal in source | Bridge release version. Bump per release. |
+| `buildCommitSha` | Class ivar `buildCommitSha`, set by Start-VWBridge.ps1 at cold-start | Git HEAD when **this bridge instance** was launched — NOT when the parcel was originally built. Defaults to `'unknown'` if no wrapper involvement. |
+| `buildTimestamp` | Class ivar `buildTimestamp`, set by wrapper at cold-start | ISO-8601 UTC of the same launch event. |
+| `parcelMode` | Class ivar `parcelMode`, set by wrapper at cold-start | `'FileIn'` or `'Parcel'` — which install path is active. |
+
+For parcel-build provenance (when was the .pcl actually compiled into binary), check `git log` on `parcels/VWBridge.pcl`. The wrapper-injected fields reflect cold-start, not parcel-build, because attempting to bake build metadata into the parcel as compiled-literal class-side methods wedges the bridge — see [Why metadata is NOT baked into the parcel](#why-metadata-is-not-baked-into-the-parcel-session-20).
+
+### Class-side accessors + setters (VWB.VWBridge class>>'config')
+
+Added to [`VWBridge.st`](../src/vw-bridge/VWBridge.st) class-side `'config'` category:
+
+```smalltalk
+version
+    ^'0.10.0'
+
+buildCommitSha
+    ^buildCommitSha isNil ifTrue: ['unknown'] ifFalse: [buildCommitSha]
+
+buildCommitSha: aString
+    buildCommitSha := aString
+
+buildTimestamp
+    ^buildTimestamp isNil ifTrue: ['unknown'] ifFalse: [buildTimestamp]
+
+buildTimestamp: aString
+    buildTimestamp := aString
+
+parcelMode
+    ^parcelMode isNil ifTrue: ['unknown'] ifFalse: [parcelMode]
+
+parcelMode: aString
+    parcelMode := aString
+```
+
+Three new class instance variables (`buildCommitSha`, `buildTimestamp`, `parcelMode`) added to `classInstanceVariableNames`. The setters mutate the ivars; the getters read them with `'unknown'` fallback. The new parcel includes all 7 methods via `addEntiretyOfClass:` so Parcel-mode cold-start has the setters available for wrapper injection.
+
+### Start-VWBridge.ps1 region (10) — build-info inject (both modes)
+
+The wrapper now does a second `/eval` POST after the `useNativeDialogs:` toggle:
+
+```powershell
+$buildCommitSha = Get-GitHeadSha $bridgeHome              # walks up to find .git/HEAD
+$buildTimestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+$infoBody = "VWB.VWBridge buildCommitSha: '$buildCommitSha'. " +
+            "VWB.VWBridge buildTimestamp: '$buildTimestamp'. " +
+            "VWB.VWBridge parcelMode: '$Mode'. ^'build-info-set'"
+curl.exe -s -X POST http://127.0.0.1:9876/eval ...
+```
+
+`Get-GitHeadSha` is a pure-PowerShell helper (no `git` CLI dependency — git isn't on PowerShell's PATH on this workstation, only via WSL): walks up from `$bridgeHome` to find the `.git` directory, reads `HEAD`, follows `ref:` to `.git/refs/heads/<branch>` or falls back to `packed-refs`. Returns `'unknown'` on any failure.
+
+Both modes run identical inject — no Mode-specific branch. Acceptable trade-off: Parcel-mode `/version` reflects cold-start moment (not parcel-build moment), but for traceability `git log parcels/VWBridge.pcl` gives the actual parcel-build commit.
+
+### scripts/Build-Parcel.ps1 — reproducible parcel rebuild
+
+[`scripts/Build-Parcel.ps1`](../src/vw-bridge/scripts/Build-Parcel.ps1) drives a headless parcel build via `/eval`:
+
+1. Preflight: bridge UP + `VW_BRIDGE_HOME` + `.token` readable
+2. Captures git HEAD SHA + UTC timestamp **for build-context logging only** (NOT baked into parcel content)
+3. Clears prior `.generated/parcels/VWBridge.pcl` + `.pst` (so we know the build wrote fresh ones)
+4. POSTs the verbatim session-19 parcel-build pattern: `Cursor>>showWhile:` monkey-patch (carry-forward #35) + `Kernel.Parcel createParcelNamed: 'VWBridge'` + `addNameSpace: VWB` + `addEntiretyOfClass: VWB.VWBridge` + `addSelector: #choose:labels:values:default:for: class: SimpleDialog` + `parcelOutOn:withSource:hideOnLoad:republish:backup:` + `removeParcelNamed:` cleanup (constraint #38)
+5. Verifies output artifacts exist
+6. Copies `.pcl` + `.pst` from `.generated/parcels/` to `parcels/` (the shipped distribution location)
+
+Build succeeded session-20 first try with verbatim session-19 pattern (no compile-time modifications to VWB.VWBridge class — see why below). Produced `VWBridge.pcl` 53,305 bytes + `VWBridge.pst` 130,811 bytes — slightly larger than session-19's 52,478 + 128,285 to accommodate the 7 new methods.
+
+### Why metadata is NOT baked into the parcel (session-20)
+
+The "obvious" approach for `/version` was: compile literal-returning class-side methods (`buildCommitSha ^'<sha>'`, `buildTimestamp ^'<ts>'`) into VWB.VWBridge class BEFORE `addEntiretyOfClass:`, so the parcel ships them as baked-in literals. Session-20 attempted this and it wedged the bridge mid-build, twice.
+
+Two related discoveries surfaced during the attempt:
+
+1. **`compile:` on VWB.VWBridge class via /eval wedges the bridge listener** (new constraint #41). Even with the Cursor>>showWhile: monkey-patch installed FIRST, calling `VWB.VWBridge class compile: 'source' classified: 'cat'` triggers a wedge somewhere. Root cause: compile: fires VW change announcements (ChangeAdded / MethodAdded) that fan out to UI listeners, at least one of which routes through a wedging path other than `Cursor wait showWhile:` (which the Cursor patch covers). A single isolated compile: call sometimes works; a more involved probe (compile + parcelOutOn: + ensure: cleanup) reliably wedges.
+
+2. **ensure: block referencing VWB.VWBridge AFTER `parcelOutOn:` + `removeParcelNamed:` raises "no binding"** (new constraint #42). When the ensure block runs `VWB.VWBridge class methodDictionary at: #buildCommitSha put: oldShaMethod` after the parcel build completes, the Compiler reports `"The identifier VWB.VWBridge has no binding"` even though the class IS still bound at runtime (verified by subsequent probes). Some Compiler / namespace state is corrupted during parcel manipulation that affects subsequent expression-compile binding resolution in the same /eval body.
+
+Both findings are likely manifestations of the same root cause (parcel-build perturbs the change/announcement system + Compiler binding cache). They are recorded as separate constraints because they manifest at different points.
+
+**Design implication**: the simpler design (wrapper /eval-injects values at cold-start in both modes via setters on the class) sidesteps both wedges entirely. Build-Parcel.ps1 ships just the class definitions + methods — no compile-time customization. The `git log parcels/VWBridge.pcl` provides traceability when needed.
+
+### Quality gate (session-20, 5-cycle Parcel mode)
+
+5 consecutive cold-start cycles via `Start-VWBridge.ps1 -Mode Parcel -KillExisting`:
+
+| Cycle | Elapsed | PID transition | Token (full) | /version |
+|---|---|---|---|---|
+| 1 (dry-run, manual) | ~9s | 8944 → 3316 | `…-12438` → `…-808187` | ✓ |
+| 2 | 9.18s | 3316 → 6140 | `…-808187` → `…-808187` | ✓ |
+| 3 | 9.78s | 6140 → 7336 | `…-808187` → `…-808187` | ✓ |
+| 4 | 9.02s | 7336 → 3868 | `…-808187` → `…-808187` | ✓ |
+| 5 | 8.66s | 3868 → 7588 | `…-808187` → `…-808187` | ✓ |
+
+**Mean 9.16s for cycles 2-5** — slightly slower than session-19's 8.43s, attributable to the extra `/eval` round-trip for build-info inject. All 5 PIDs distinct, all 5 tokens distinct as wholes (timestamp portion advances cleanly; random portion `-808187` repeats in 4 of 5 cycles — same pattern as sessions 18 and 19, confirming the token-entropy carry-forward observation for `generateToken`'s random source). `/version` returned valid 4-field JSON with `buildTimestamp` advancing each cycle (`17:06:55Z` → `17:07:05Z` → `17:07:14Z` → `17:07:23Z`), confirming wrapper injection runs every cycle.
+
+### Wrapper recovery validation (session-20)
+
+The wrapper handled **5 unplanned bridge recoveries** during session-20 debugging (compile-wedge investigation):
+
+| # | Trigger | Recovery time |
+|---|---|---|
+| 1 | Cursor monkey-patch + parcelOutOn: + ensure-block "no binding" | ~9s FileIn |
+| 2 | HALF 1 isolation probe (compile: on VWB.VWBridge, no patch) | ~9s FileIn |
+| 3 | Ensure-block referencing VWB.VWBridge post-build | ~9s FileIn |
+| 4 | Successful build, then state probe wedged | ~9s FileIn |
+| 5 | Parcel-mode validation cycle 1 (intentional, not a recovery) | ~9s Parcel |
+
+Wrapper recovered cleanly every time. The P5 wrapper is now stress-tested under 9 (s19) + 5 (s20) = 14 unplanned/cycling launches across two sessions. **Empirical confidence HIGH.**
+
+### Carry-forward constraints emitted by P7+P8 work (41-42)
+
+See the constraint summary at the end of this doc:
+- **41** `compile:` on VWB.VWBridge wedges the bridge even with Cursor monkey-patch installed
+- **42** ensure: block referencing VWB.VWBridge after parcelOutOn: + removeParcelNamed: raises "no binding"
+
+---
+
 ## Startup hook landscape (heart of Phase D evidence)
 
 This image **does NOT auto-execute Smalltalk code at boot through any standard VW mechanism.**
@@ -1088,6 +1223,8 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **`Kernel.Parcel class>>removeParcelNamed:` raises Notification** (session-19): a benign `'Notification - '` fires during the removal. Naive `[...] on: Core.Exception do: [...]` catches it and ABORTS the removal — parcel stays in `parcelList`. Use the Notification-resume pattern matching constraint #25: `[Kernel.Parcel removeParcelNamed: name] on: Core.Notification do: [:n | n resume]`. Wrapped within a broader `ensure:` block for guaranteed cleanup-on-error.
 - **`CodeWriter` is the binary parcel write engine** (session-19): top-level `Smalltalk.CodeWriter` (env=#Kernel, super=ObjectTracer, 6 class-side selectors, 123 inst-side selectors). Inst-side `writeToParcelFileNamed:sourceFileNamed:oldSourceIndex:hideSource:republish:backup:` is the actual binary-write entry point that `parcelOutOn:` delegates to via `prepareCodeWriter:`. None of CodeWriter's methods call `#showWhile:` directly — the UI wrapper is at the `parcelOutOn:` layer, NOT in the writer. Direct CodeWriter invocation is theoretically possible but requires reverse-engineering the ChangeSet + codeComponent setup that `parcelOutOn:` does (session-19 attempted and failed: MNU `#removeKey:ifAbsent:` on nil receiver because parcel wasn't registered in some ChangeSet/SourceFileManager dict). The Cursor monkey-patch (constraint #35) bypasses this complexity by enabling the canonical wrapper invocation.
 - **Parcel write embeds `.pst` path reference; ship `.pst` alongside `.pcl`** (session-19 P6): `Kernel.Parcel loadParcelFrom: pclFilename` looks for `pcl.pst` source companion alongside the `.pcl`. If absent, VW pops `'Failed to find source file <Name>.pst. Ok to load without target source?'` confirmation dialog that wedges headless image startup. Two fixes: (a) commit `.pst` alongside `.pcl` in distribution (current P6 approach — stock VW does this, UIPainter.pst 1.6 MB lives alongside UIPainter.pcl 670 KB), or (b) rebuild parcel with `hideOnLoad: true` to suppress source dependency. VW binary parcel format: magic header `00 11 00 00 00 D0 00 00 00 01 1D` + ASCII `Smalltalk Binary Storage File` + length-prefixed parcel name + length-prefixed version string.
+- **`compile:` on VWB.VWBridge class via /eval wedges the bridge listener** (session-20 P8 discovery): calling `VWB.VWBridge class compile: 'methodSource' classified: 'category'` from an `/eval` body wedges the bridge listener even with the `Cursor>>showWhile:` monkey-patch (constraint #35) installed first. Root cause: `compile:` fires VW change announcements (`ChangeAdded` / `MethodAdded`) that fan out to UI listeners, at least one of which routes through a wedging path other than `Cursor wait showWhile:`. A SINGLE isolated `compile:` call sometimes works; a more involved probe (compile + parcelOutOn: + ensure: cleanup) reliably wedges. **Design implication**: don't compile new methods on VWB.VWBridge mid-/eval. Phase P P8 (`/version` endpoint) abandoned the "bake build metadata as compiled literal class-side methods" approach in favor of class-side accessors + setters that `Start-VWBridge.ps1` /eval-injects at every cold-start in both FileIn and Parcel modes. /version metadata therefore reflects "what is currently running" rather than "when was the parcel built". See [Phase P P7+P8 section](#phase-p-p7p8--installmd--get-version-endpoint-session-20).
+- **ensure: block referencing VWB.VWBridge after `parcelOutOn:` + `removeParcelNamed:` raises "no binding"** (session-20 P8): when an ensure block runs `VWB.VWBridge class methodDictionary at: #foo put: oldMethod` AFTER `parcelOutOn:withSource:hideOnLoad:republish:backup:` + `removeParcelNamed:` cleanup, the Compiler reports `"The identifier VWB.VWBridge has no binding"` — even though the class IS still bound at runtime (verified by subsequent probes from the same image). Some Compiler / namespace state is corrupted during parcel manipulation that affects subsequent expression-compile binding resolution within the same /eval body. Likely related to constraint #41 (compile triggers UI broadcasts + change-announcement system perturbation). Workaround: avoid referencing the class by fully-qualified name in post-parcel-build ensure: blocks. If you must, capture the class object into a temp variable BEFORE the parcel build and reference it via the temp. NOT investigated deeply — was a side-discovery during the abandoned bake-metadata path and not hit on the shipped P8 design.
 
 ---
 
