@@ -1,0 +1,54 @@
+{
+  "name": "mcp-vw",
+  "version": "0.1.0",
+  "description": "MCP server for VisualWorks 9.3.1 via the VW Bridge HTTP API. Exposes 18 MVP tools (liveness, eval with safety guards, code reading, code navigation, NATIVE-TYPED class creation, UI inspect/drive, parcel load/unload) for AI-driven native VW development.",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "bin": {
+    "mcp-vw": "dist/src/index.js"
+  },
+  "files": [
+    "dist/",
+    "manifest.json",
+    "scripts/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf dist coverage",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "visualworks",
+    "smalltalk",
+    "vw-bridge",
+    "claude-desktop"
+  ],
+  "author": "Amos Maganyane",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "rimraf": "^5.0.5",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "esbuild@0.21.5": true
+  }
+}

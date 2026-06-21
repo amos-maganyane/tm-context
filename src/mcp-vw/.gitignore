@@ -1,0 +1,35 @@
+# Build output
+dist/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Packaging artifacts
+*.mcpb
+*.tgz
+
+# vitest cache
+.vitest-cache/
+__vitest_cache__/
+
+# Lock files at runtime (NOT npm's package-lock.json)
+mcp-vw.lock
+*.lockfile
+
+# Test scratch
+.tmp/
+test/**/*.tmp
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
