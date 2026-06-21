@@ -1,4 +1,4 @@
-"=== VW Widget Bridge v0.9.1 -- /screenshot endpoint (screen+window targets, binary PNG via PowerShell System.Drawing subprocess) ==="
+"=== VW Widget Bridge v0.10.0 -- Phase P COMPLETE (env-var install + binary parcel + /version endpoint) ==="
 "INSTALL: Launcher then File Browser then File In.  Token written to .token.
  Bridge runs on 127.0.0.1:9876.  See knowledge/CONSOLIDATION-NOTES.md for
  the endpoint list, design notes, validation procedure, and migration plan.
@@ -38,7 +38,18 @@
  src/vw-bridge/load.st as the external orchestrator for file-in + start +
  .token write. Use src/vw-bridge/unload.st for the inverse defensive cleanup.
  The Stage 2 defensive removal of old top-level Root.Smalltalk.VWBridge now
- lives in load.st."
+ lives in load.st.
+ v0.10.0 Phase P P7+P8 (session-20): Phase P COMPLETE - INSTALL.md ships both
+ install paths (FileIn + Parcel); GET /version endpoint added (auth-exempt
+ like /health) returning {version, buildCommitSha, buildTimestamp, parcelMode}.
+ Bridge version moved from hardcoded /health literal to class-side #version
+ accessor. New class-side accessors+setters for buildCommitSha/buildTimestamp/
+ parcelMode added in config category; values set by Start-VWBridge.ps1 via
+ /eval post-launch in BOTH modes (parcel ships the setters via
+ addEntiretyOfClass:, no baked-in literals because compile-overrides on
+ VWB.VWBridge wedge the headless bridge mid-build). Parcel rebuild pipeline:
+ scripts/Build-Parcel.ps1 via Cursor>>showWhile: monkey-patch + canonical
+ parcelOutOn:withSource:hideOnLoad:republish:backup: (session-19 pattern)."
 
 "=== Define VWB namespace (Phase P P2 Stage 2) ==="
 [(Smalltalk at: #VWB ifAbsent: [nil]) isNil ifTrue: [
@@ -50,7 +61,7 @@ Smalltalk.VWB defineClass: #VWBridge
 	indexedType: #none
 	private: false
 	instanceVariableNames: 'port listener process token clockOverride sleepOverride scriptedWindowSnapshots scriptedDialogSnapshots screenshotCaptureOverride scriptedWindowsForScreenshot '
-	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex vwBridgeHomeOverride '
+	classInstanceVariableNames: 'singleton dispatchDepthByProcess dispatchDepthMutex vwBridgeHomeOverride buildCommitSha buildTimestamp parcelMode '
 	imports: ''
 	category: 'VWBridge-Core'!
 
@@ -154,7 +165,51 @@ screenshotHelperScriptPath
 	 Derived from vwBridgeHome. P3 relocated the helper from repo-root
 	 scripts/ to vwBridgeHome/scripts/ so a single env var pins the
 	 entire install."
-	^self vwBridgeHome , '\scripts\screenshot-helper.ps1'! !
+	^self vwBridgeHome , '\scripts\screenshot-helper.ps1'!
+
+version
+	"v0.10.0 Phase P P8: bridge release version. Bump per release.
+	 Returned by /health response and as a field in /version response.
+	 Bridge version is independent of artifact metadata (commitSha,
+	 timestamp): a parcel built from commit X can ship version 0.10.0
+	 and the same source can ship version 0.11.0 from commit Y."
+	^'0.10.0'!
+
+buildCommitSha
+	"v0.10.0 Phase P P8: git HEAD SHA at the time of bridge cold-start.
+	 Set by Start-VWBridge.ps1 post-launch via /eval in BOTH FileIn and
+	 Parcel modes. Reflects 'what is currently running' (source state at
+	 launch + which install path is active), NOT 'when was the parcel
+	 built'. For parcel-build provenance, check git log on
+	 parcels/VWBridge.pcl. Defaults to 'unknown' when not yet set (e.g.
+	 bridge started via raw Workspace paste of load.st without the wrapper)."
+	^buildCommitSha isNil ifTrue: ['unknown'] ifFalse: [buildCommitSha]!
+
+buildCommitSha: aString
+	"v0.10.0 Phase P P8: setter for git HEAD SHA. Called by
+	 Start-VWBridge.ps1 post-launch in both FileIn and Parcel modes."
+	buildCommitSha := aString!
+
+buildTimestamp
+	"v0.10.0 Phase P P8: ISO-8601 UTC timestamp of bridge cold-start.
+	 Same semantics as buildCommitSha (set by wrapper post-launch in
+	 both modes; reflects when this image was launched, NOT when the
+	 parcel was originally built). Defaults to 'unknown'."
+	^buildTimestamp isNil ifTrue: ['unknown'] ifFalse: [buildTimestamp]!
+
+buildTimestamp: aString
+	"v0.10.0 Phase P P8: setter for ISO-8601 UTC build/launch timestamp."
+	buildTimestamp := aString!
+
+parcelMode
+	"v0.10.0 Phase P P8: which install path is active - FileIn or Parcel.
+	 Set by Start-VWBridge.ps1 post-launch in both modes. Defaults to
+	 unknown when not yet set (e.g. manually-started bridge)."
+	^parcelMode isNil ifTrue: ['unknown'] ifFalse: [parcelMode]!
+
+parcelMode: aString
+	"v0.10.0 Phase P P8: setter for install-mode tag (FileIn or Parcel)."
+	parcelMode := aString! !
 
 !VWB.VWBridge methodsFor: 'accessing'!
 
@@ -546,14 +601,14 @@ readHeadersFrom: aStream
 authError: requestLine headers: headers
 	"Returns nil if auth passes (or path is exempt). Otherwise returns an HTTP
 	 response string to short-circuit the dispatcher.
-	 Exempt paths: /health, /favicon.ico."
+	 Exempt paths: /health, /version, /favicon.ico."
 	| parts path tokenHeader provided |
 	parts := self split: requestLine on: (Core.Character value: 32).
 	parts size < 2 ifTrue: [
 		^self httpResponse: 400 type: 'application/json' body: '{"error":"bad_request"}'].
 	path := parts at: 2.
 	(path includes: $?) ifTrue: [path := path copyFrom: 1 to: (path indexOf: $?) - 1].
-	(path = '/health' or: [path = '/favicon.ico']) ifTrue: [^nil].
+	(((path = '/health') or: [path = '/version']) or: [path = '/favicon.ico']) ifTrue: [^nil].
 	tokenHeader := headers at: 'authorization' ifAbsent: [nil].
 	tokenHeader == nil ifTrue: [
 		^self httpResponse: 401 type: 'application/json'
@@ -578,7 +633,7 @@ dispatch: requestLine headers: headers body: bodyString
 	 with the Stage 1 substring check in handleEvalBody:, this contains
 	 the foot-gun.
 	 All routes:
-	   GET  /health /windows /windows/tree /value /menu /dialogs
+	   GET  /health /version /windows /windows/tree /value /menu /dialogs
 	   POST /click /type /menu/click /eval /dialogs/respond /wait /screenshot
 	   PUT  /value
 	   OPTIONS *"
@@ -619,7 +674,13 @@ doDispatch: requestLine headers: headers body: bodyString
 	method = 'GET' ifTrue: [
 		path = '/health' ifTrue: [
 			^self httpResponse: 200 type: 'application/json'
-				body: '{"status":"ok","version":"0.9.1"}'].
+				body: '{"status":"ok","version":"' , self class version , '"}'].
+		path = '/version' ifTrue: [
+			^self httpResponse: 200 type: 'application/json'
+				body: '{"version":"' , self class version
+					, '","buildCommitSha":"' , self class buildCommitSha
+					, '","buildTimestamp":"' , self class buildTimestamp
+					, '","parcelMode":"' , self class parcelMode , '"}'].
 		path = '/windows' ifTrue: [^self handleWindows].
 		path = '/windows/tree' ifTrue: [^self handleTree].
 		path = '/value' ifTrue: [^self handleGetValueQuery: queryString].

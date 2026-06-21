@@ -105,6 +105,47 @@ function Write-Bad([string]$msg) {
     Write-Host "[Start-VWBridge] $msg" -ForegroundColor Red
 }
 
+function Get-GitHeadSha([string]$startPath) {
+    # Walks up from $startPath looking for a .git directory, then resolves HEAD
+    # to a 40-char SHA. Pure-PowerShell - does NOT shell out to `git` (which
+    # isn't on PowerShell's PATH on this workstation, only via WSL).
+    # Returns 'unknown' on any failure (no repo, packed refs not parseable, etc.).
+    try {
+        $current = (Get-Item -LiteralPath $startPath -ErrorAction Stop).FullName
+        while ($current -and $current.Length -gt 3) {
+            $gitDir = Join-Path $current '.git'
+            if (Test-Path -LiteralPath $gitDir) {
+                $headPath = Join-Path $gitDir 'HEAD'
+                if (-not (Test-Path -LiteralPath $headPath)) { return 'unknown' }
+                $head = (Get-Content -LiteralPath $headPath -Raw).Trim()
+                if ($head -match '^ref:\s+(.+)$') {
+                    $refName = $matches[1]
+                    $refPath = Join-Path $gitDir $refName
+                    if (Test-Path -LiteralPath $refPath) {
+                        return (Get-Content -LiteralPath $refPath -Raw).Trim()
+                    }
+                    # Fall back to packed-refs (common after `git gc`)
+                    $packedRefsPath = Join-Path $gitDir 'packed-refs'
+                    if (Test-Path -LiteralPath $packedRefsPath) {
+                        $line = Get-Content -LiteralPath $packedRefsPath |
+                                Where-Object { $_ -match "\s$([regex]::Escape($refName))$" } |
+                                Select-Object -First 1
+                        if ($line) { return ($line -split '\s+')[0] }
+                    }
+                    return 'unknown'
+                } else {
+                    # Detached HEAD - HEAD content IS the SHA
+                    return $head
+                }
+            }
+            $parent = Split-Path -Parent $current
+            if ($parent -eq $current) { break }
+            $current = $parent
+        }
+    } catch { }
+    return 'unknown'
+}
+
 #region --- (1) preflight ---
 
 # VW_BRIDGE_HOME resolution order: Process env, User env, Machine env.
@@ -342,6 +383,30 @@ if (-not $SkipNativeDialogToggle) {
     } else {
         Write-Warn "useNativeDialogs toggle response: $toggleResp"
     }
+}
+
+#endregion
+
+#region --- (10) post-launch: inject build info via /eval (Phase P P8) ---
+
+# Resolve git HEAD SHA by reading .git/HEAD directly (no git CLI dependency).
+$buildCommitSha = Get-GitHeadSha $bridgeHome
+# UTC ISO-8601 (yyyy-MM-ddTHH:mm:ssZ) - sortable, unambiguous.
+$buildTimestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+# Both modes set all 3 fields. The values reflect THIS cold-start (not the
+# parcel's original build time). The /version response is therefore "what
+# is this running bridge" rather than "when was the parcel built". For
+# parcel-build provenance, check git log of parcels/VWBridge.pcl.
+$infoBody = "VWB.VWBridge buildCommitSha: '$buildCommitSha'. VWB.VWBridge buildTimestamp: '$buildTimestamp'. VWB.VWBridge parcelMode: '$Mode'. ^'build-info-set'"
+$infoResp = & curl.exe -s -X POST http://127.0.0.1:9876/eval `
+    -H "Authorization: Bearer $token" `
+    -H "Content-Type: text/plain" `
+    --data-binary $infoBody 2>$null
+if ($LASTEXITCODE -eq 0 -and $infoResp -match 'build-info-set') {
+    Write-Good "build-info injected (sha=$buildCommitSha, ts=$buildTimestamp, mode=$Mode)"
+} else {
+    Write-Warn "build-info inject response: $infoResp"
 }
 
 #endregion
