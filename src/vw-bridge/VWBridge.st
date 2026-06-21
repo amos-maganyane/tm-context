@@ -2259,34 +2259,46 @@ handleScreenshotBody: aBodyString
 		^self httpResponse: (resolution at: 'status') type: 'application/json'
 			body: (self jsonScreenshotErrorBodyFor: resolution)].
 	rect := resolution at: 'rect'.
-	"Try test seam override first; failure-outcome mapping (408/500) is Step 16."
+	"Try test seam override first; production capture is Step 17."
 	screenshotCaptureOverride ifNotNil: [
 		outcome := screenshotCaptureOverride value: spec value: rect.
 		(outcome isKindOf: Core.Dictionary) ifTrue: [
-			(outcome at: 'ok' ifAbsent: [false]) = true ifTrue: [
-				| pngBytes maxBytes extraHdrs |
-				pngBytes := outcome at: 'pngBytes'.
-				maxBytes := spec at: 'maxBytes'.
-				"Step 14: post-capture size cap. F1 spec mandates 413 with
-				 screenshot-too-large error code if encoded PNG exceeds the
-				 caller's maxBytes (default + hard cap = 16777216 = 16 MiB).
-				 No automatic downscaling - pathological capture is REJECTED
-				 not silently corrupted (preserves forensic fidelity)."
-				pngBytes size > maxBytes ifTrue: [
-					| errSpec |
-					errSpec := self screenshotErrorWithCode: 'screenshot-too-large'
-						status: 413
-						message: 'encoded PNG size ' , pngBytes size printString , ' bytes exceeds maxBytes ' , maxBytes printString.
-					^self httpResponse: 413 type: 'application/json'
-						body: (self jsonScreenshotErrorBodyFor: errSpec)].
-				extraHdrs := Core.OrderedCollection new.
-				extraHdrs add: 'Cache-Control: no-store'.
-				extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
-				extraHdrs add: 'X-VWBridge-Screenshot-Target: ' , (spec at: 'targetType').
-				extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
-				extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
-				^self httpBinaryResponse: 200 type: 'image/png'
-					body: pngBytes extraHeaders: extraHdrs]]].
+			(outcome at: 'ok' ifAbsent: [false]) = true
+				ifTrue: [
+					| pngBytes maxBytes extraHdrs |
+					pngBytes := outcome at: 'pngBytes'.
+					maxBytes := spec at: 'maxBytes'.
+					"Step 14: post-capture size cap. F1 spec mandates 413 with
+					 screenshot-too-large error code if encoded PNG exceeds the
+					 caller's maxBytes (default + hard cap = 16777216 = 16 MiB).
+					 No automatic downscaling - pathological capture is REJECTED
+					 not silently corrupted (preserves forensic fidelity)."
+					pngBytes size > maxBytes ifTrue: [
+						| errSpec |
+						errSpec := self screenshotErrorWithCode: 'screenshot-too-large'
+							status: 413
+							message: 'encoded PNG size ' , pngBytes size printString , ' bytes exceeds maxBytes ' , maxBytes printString.
+						^self httpResponse: 413 type: 'application/json'
+							body: (self jsonScreenshotErrorBodyFor: errSpec)].
+					extraHdrs := Core.OrderedCollection new.
+					extraHdrs add: 'Cache-Control: no-store'.
+					extraHdrs add: 'X-VWBridge-Screenshot-Format: ' , (spec at: 'format').
+					extraHdrs add: 'X-VWBridge-Screenshot-Target: ' , (spec at: 'targetType').
+					extraHdrs add: 'X-VWBridge-Screenshot-Width: ' , (outcome at: 'width') printString.
+					extraHdrs add: 'X-VWBridge-Screenshot-Height: ' , (outcome at: 'height') printString.
+					^self httpBinaryResponse: 200 type: 'image/png'
+						body: pngBytes extraHeaders: extraHdrs]
+				ifFalse: [
+					"Step 16: ok=false failure outcome - map outcome.status to HTTP
+					 status code, outcome.error to F1 error code, outcome.message
+					 to human detail. Defaults are conservative (500 + screenshot-
+					 capture-failed + generic message) for outcomes missing fields."
+					| failSpec |
+					failSpec := self screenshotErrorWithCode: (outcome at: 'error' ifAbsent: ['screenshot-capture-failed'])
+						status: (outcome at: 'status' ifAbsent: [500])
+						message: (outcome at: 'message' ifAbsent: ['unspecified capture failure']).
+					^self httpResponse: (failSpec at: 'status') type: 'application/json'
+						body: (self jsonScreenshotErrorBodyFor: failSpec)]]].
 	"Production capture path - lands in Step 17."
 	^self httpResponse: 500 type: 'application/json'
 		body: '{"error":"screenshot-not-yet-implemented","message":"production capture path lands in Step 17"}'!
