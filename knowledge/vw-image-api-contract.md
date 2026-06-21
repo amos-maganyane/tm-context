@@ -37,6 +37,7 @@ If a selector you assume exists isn't listed here, **probe before using it.** Pr
 |---|---|---|
 | Get image file path | ✗ `Smalltalk imageFileName` / ✓ `ObjectMemory imageName` | `ObjectMemory imageName` |
 | Get current directory | ✓ | `Filename defaultDirectory` |
+| Read OS env var by name | ✗ `OS.OperatingSystem` (absent in this image) / ✓ `OS.CEnvironment userEnvironment at: 'X' ifAbsent: [...]` (fail-loud) / ✓ `OS.CEnvironment getenv: 'X'` (returns `''` on missing — GOTCHA) | see [Environment variables](#environment-variables-session-14) |
 | Build output strings | ✗ `String streamContents:` / ✓ `WriteStream on: String new` | always use the WriteStream form |
 | Emit a newline in a stream | ✗ `Core.Character lf asString` (returns `'Core.Character lf'`) / ✓ `String with: Core.Character lf` | bind once at probe top: `nl := String with: Core.Character lf` |
 | Find substring index | ✗ 1-arg `indexOfSubCollection:` / ✓ `indexOfSubCollection: aSub startingAt: 1` | always 2-arg form |
@@ -335,6 +336,72 @@ PowerShell helper scripts that emit binary stdout MUST use `[Console]::OpenStand
 
 ---
 
+## Environment variables (session-14)
+
+The standard VW class `OS.OperatingSystem` is ABSENT in this image. OS env-var access lives on `OS.CEnvironment` (a `Dictionary` subclass; `userEnvironment` returns a populated `CEnvironment` of ~47 entries on Windows).
+
+### Canonical read by name (fail-loud)
+
+```smalltalk
+| home |
+home := OS.CEnvironment userEnvironment
+    at: 'VW_BRIDGE_HOME'
+    ifAbsent: [self error: 'VW_BRIDGE_HOME not set'].
+```
+
+- `OS.CEnvironment userEnvironment` returns the live OS env as a `CEnvironment` instance.
+- Identity-stable: two consecutive calls return `==` instances. Mutations propagate across reads.
+- `at:ifAbsent:` distinguishes missing-key from empty-string-value — cleanest fail-loud pattern.
+
+### Shortcut read (GOTCHA: returns empty string on missing)
+
+```smalltalk
+OS.CEnvironment getenv: 'VW_BRIDGE_HOME'                 "returns '' if not set, NOT nil"
+OS.CEnvironment caseInsensitiveGetenv: 'userprofile'     "case-insensitive variant"
+```
+
+⚠ `getenv:` returns `''` (empty string) when the var is missing, NOT nil and does NOT raise. The naive predicate `(OS.CEnvironment getenv: 'X') isNil` is always false → unreliable for "is this set?" checks. Use `userEnvironment at:ifAbsent:` for fail-loud, or `(getenv: 'X') isEmpty` if you accept the missing-vs-empty conflation.
+
+### Test-time mutation
+
+```smalltalk
+"Set:"
+OS.CEnvironment userEnvironmentAt: 'VW_BRIDGE_HOME' put: 'C:\test\value'.
+
+"Remove:"
+OS.CEnvironment userEnvironment removeKey: 'VW_BRIDGE_HOME' ifAbsent: [nil].
+```
+
+- Mutations are visible to BOTH `getenv:` and `userEnvironment at:` reads (consistent).
+- Mutations persist for the `vwnt.exe` process lifetime. ALWAYS restore in `tearDown` / `ensure:` block.
+- For hermetic tests prefer a class-side override seam (e.g. `Class>>fooOverride: aValue` / `clearFooOverride`) over OS env mutation — the seam is local to the class and never risks leaking state between tests.
+
+### Misleading APIs (do NOT use for OS env vars)
+
+| Selector | Actually returns | Use for OS env vars? |
+|---|---|---|
+| `OS.ExternalProcess environment` | `Smalltalk.OS` NameSpace (117 keys) | ❌ No — Smalltalk symbol scope |
+| `ObjectMemory environment` | `Smalltalk.Kernel` NameSpace | ❌ No — Smalltalk symbol scope |
+| `Smalltalk environment` | a NameSpace | ❌ No — Smalltalk symbol scope |
+
+All three return Smalltalk namespaces (compile-time symbol scopes), not OS environment variables. The shared selector name is a misnomer specific to this image's API surface.
+
+### Production usage in this codebase
+
+`VWBridge class>>vwBridgeHome` (added session-14 Phase P P1, see [`src/vw-bridge/VWBridge.st`](../src/vw-bridge/VWBridge.st)) uses the canonical fail-loud read with a class-side override seam for tests:
+
+```smalltalk
+vwBridgeHome
+    vwBridgeHomeOverride isNil ifFalse: [^vwBridgeHomeOverride].
+    ^OS.CEnvironment userEnvironment
+        at: 'VW_BRIDGE_HOME'
+        ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set...']
+```
+
+Tests inject via `VWBridge vwBridgeHomeOverride: 'C:\test\path'` and clear via `VWBridge clearVwBridgeHomeOverride` inside `ensure:` blocks. No OS env mutation in test setUp/tearDown — keeps the suite hermetic from process-wide env state.
+
+---
+
 ## Startup hook landscape (heart of Phase D evidence)
 
 This image **does NOT auto-execute Smalltalk code at boot through any standard VW mechanism.**
@@ -560,6 +627,7 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **Bare `OS.ExternalProcess>>wait` does NOT actually wait** (session-12 problem; session-13 FIX): use `execute:arguments:do:errorStreamDo:` one-shot pattern + `outStream binary` flip — see [Subprocess invocation](#subprocess-invocation-session-13) section.
 - **PowerShell `>` redirection mangles binary stdout** (session-12): UTF-16 LE Out-File semantics even when subprocess writes raw bytes. Use .NET Process API OR `cmd /c "..." > file` for byte-faithful redirection.
 - **`ExternalReadAppendStream nextPutAll: aByteArray`** requires `binary` flip (session-13): raises "Strings only store Characters" otherwise. For socket-write of binary responses (e.g. /screenshot PNG): `(response isKindOf: ByteArray) ifTrue: [stream binary]` before `nextPutAll:`.
+- **OS env vars** via `OS.CEnvironment userEnvironment at:ifAbsent:` for fail-loud (session-14): `OS.OperatingSystem` ABSENT in this image; `getenv:` returns `''` on missing (gotcha — naive `isNil` check breaks); `OS.ExternalProcess environment` / `ObjectMemory environment` / `Smalltalk environment` return Smalltalk NameSpace not env vars (misnomer). See [Environment variables](#environment-variables-session-14) section.
 
 ---
 
