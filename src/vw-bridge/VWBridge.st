@@ -2244,13 +2244,21 @@ handleScreenshotBody: aBodyString
 	 Width/Height headers + maxBytes 413 + window 404/409 + failure
 	 408/500 mapping land in Steps 13/14/15/16. See PLAN-PHASE-F-
 	 SCREENSHOT.md and VWBridgeScreenshotTest."
-	| spec rect outcome |
+	| spec rect outcome resolution |
 	spec := self parseAndValidateScreenshotRequest: aBodyString.
 	(spec at: 'ok') = false ifTrue: [
 		^self httpResponse: (spec at: 'status') type: 'application/json'
 			body: (self jsonScreenshotErrorBodyFor: spec)].
-	"Window-target resolution lands in Step 15. For screen target rect is nil."
-	rect := nil.
+	"Step 15: Resolve target window BEFORE invoking capture (404/409 paths
+	 must not trigger capture per F1 spec - first-match-wins is a flake
+	 generator). For screen target, resolution is a no-op returning rect=nil
+	 (subprocess captures full virtual screen via [SystemInformation]::
+	 VirtualScreen in Step 17)."
+	resolution := self resolveWindowRectForScreenshot: spec.
+	(resolution at: 'ok') = false ifTrue: [
+		^self httpResponse: (resolution at: 'status') type: 'application/json'
+			body: (self jsonScreenshotErrorBodyFor: resolution)].
+	rect := resolution at: 'rect'.
 	"Try test seam override first; failure-outcome mapping (408/500) is Step 16."
 	screenshotCaptureOverride ifNotNil: [
 		outcome := screenshotCaptureOverride value: spec value: rect.
@@ -2374,7 +2382,74 @@ jsonScreenshotErrorBodyFor: aFailureDict
 	 handler. Shape matches the conventional bridge error envelope:
 	   {error: <code>, message: <detail>}"
 	^'{"error":' , (self safeJsonFor: (aFailureDict at: 'error')) ,
-		',"message":' , (self safeJsonFor: (aFailureDict at: 'message')) , '}'! !
+		',"message":' , (self safeJsonFor: (aFailureDict at: 'message')) , '}'!
+
+resolveWindowRectForScreenshot: aSpec
+	"v0.9.1 Step 15: Resolve target window for /screenshot OR return failure
+	 dictionary for 404/409 outcomes.
+	 - target.type='screen': no-op success with rect=nil (subprocess captures
+	   full virtual screen via [SystemInformation]::VirtualScreen in Step 17).
+	 - target.type='window': filter window snapshot by appClass and/or
+	   titleContains; exactly 1 match required (0 -> 404, 2+ -> 409). Per F1
+	 spec NEVER first-match-wins (test-flake generator).
+	 Window source priority:
+	   1. scriptedWindowsForScreenshot test seam (when non-nil) - SEPARATE
+	      from scriptedWindowSnapshots so /wait + /screenshot don't interfere
+	   2. windowsSnapshotForWait production snapshot (already runs onUIDo:
+	      internally and is shape-compatible)
+	 Result Dictionary:
+	   ok=true success: {ok:true, rect: aWindowDict OR nil for screen}
+	   ok=false failure: {ok:false, status:404|409, error:String, message:String}
+	 Failure dictionary shape matches screenshotErrorWithCode:status:message:
+	 so caller can route it through the same jsonScreenshotErrorBodyFor:
+	 + httpResponse: pipeline as parseAndValidateScreenshotRequest: failures."
+	| targetType windows appClass titleContains matched result |
+	targetType := aSpec at: 'targetType'.
+	targetType = 'screen' ifTrue: [
+		result := Core.Dictionary new.
+		result at: 'ok' put: true.
+		result at: 'rect' put: nil.
+		^result].
+	"target.type='window' path - prefer scripted seam over live snapshot"
+	windows := scriptedWindowsForScreenshot ifNil: [self windowsSnapshotForWait].
+	windows == nil ifTrue: [windows := Core.OrderedCollection new].
+	appClass := aSpec at: 'appClass' ifAbsent: [nil].
+	titleContains := aSpec at: 'titleContains' ifAbsent: [nil].
+	matched := windows select: [:w |
+		self windowMatchesScreenshotFilter: w appClass: appClass titleContains: titleContains].
+	matched isEmpty ifTrue: [
+		^self screenshotErrorWithCode: 'screenshot-window-not-found'
+			status: 404
+			message: 'no window matched filter (appClass=' , appClass printString , ', titleContains=' , titleContains printString , ')'].
+	matched size > 1 ifTrue: [
+		^self screenshotErrorWithCode: 'screenshot-window-ambiguous'
+			status: 409
+			message: matched size printString , ' windows matched filter (appClass=' , appClass printString , ', titleContains=' , titleContains printString , '); ambiguous'].
+	"Exactly one match - return as the rect"
+	result := Core.Dictionary new.
+	result at: 'ok' put: true.
+	result at: 'rect' put: matched first.
+	^result!
+
+windowMatchesScreenshotFilter: aWindowDict appClass: aClassName titleContains: aTitleSubstring
+	"Predicate for /screenshot window resolution. Both arguments may be nil
+	 (then they contribute no constraint); at least one MUST be non-nil per
+	 parseAndValidateScreenshotRequest:.
+	 - appClass: case-SENSITIVE exact match (matches /windows handler
+	   behavior - app classes are Smalltalk class names which are case-sig)
+	 - titleContains: case-INSENSITIVE substring match (matches /wait
+	   evaluateWindowAppears: convention for human-friendly UI matching)
+	 Returns false if any provided constraint fails, true if all constraints
+	 pass (or no constraints - rejected upstream by validation)."
+	| actualClass actualTitle |
+	actualClass := aWindowDict at: 'appClass' ifAbsent: [''].
+	actualTitle := aWindowDict at: 'title' ifAbsent: [''].
+	aClassName == nil ifFalse: [
+		actualClass = aClassName ifFalse: [^false]].
+	aTitleSubstring == nil ifFalse: [
+		(actualTitle asLowercase indexOfSubCollection: aTitleSubstring asLowercase startingAt: 1) > 0
+			ifFalse: [^false]].
+	^true! !
 
 "v0.8.12 Bug #2 Symptom A fix - SimpleDialog override (see method comment + knowledge/vw-bridge-known-issues.md Bug #2)"
 Transcript cr; show: '[v0.8.12] Installing SimpleDialog>>choose:labels:values:default:for: override (Bug #2 Symptom A fix)'; cr!
