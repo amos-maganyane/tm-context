@@ -54,8 +54,8 @@ function makeGetClassDefinitionTool(bridge: BridgeClientLike): ToolDef<typeof de
   return {
     name: 'vw_get_class_definition',
     description:
-      'Get the class definition source (subclass: form) for a VW class. ' +
-      'Returns the canonical "ClassName subclass: #X instanceVariableNames:... classVariableNames:... poolDictionaries:... category:..." text. ' +
+      'Get the class definition source for a VW class. ' +
+      'Returns the canonical Cincom VW form, typically "Smalltalk.<NS> defineClass: #X superclass: #{<NS>.<Super>} indexedType: #none private: false instanceVariableNames:... classInstanceVariableNames: \'\' imports: \'\' category:..." (modern 8-kw defineClass:), or "<Super> subclass: #X ... category:..." (legacy 5-kw) for older classes. ' +
       'NOTE: bridge collapses whitespace (#43) so multi-line definitions come back on one line — still readable. ' +
       'For instance/class methods, use vw_list_methods.',
     inputSchema: definitionInputSchema,

@@ -50,9 +50,10 @@ describe('vw_create_application_model — happy path', () => {
     // Expect at least: 1 class def + 2 aspect accessors + 1 action + 1 windowSpec = 5 POSTs.
     expect(sources.length).toBeGreaterThanOrEqual(5);
 
-    // Class definition
-    expect(sources[0]).toContain('subclass: #PartySearchView');
-    expect(sources[0]).toContain("inDictionary: 'MyAppPackage'");
+    // Class definition (defineClass: 8-kw form per s23 benchmark Bug 1 fix —
+    // namespace placement is via the receiver, not a 6-kw inDictionary: selector).
+    expect(sources[0]).toContain('Smalltalk.MyAppPackage defineClass: #PartySearchView');
+    expect(sources[0]).toContain('superclass: #{Smalltalk.ApplicationModel}');
     expect(sources[0]).toContain("instanceVariableNames: 'searchString results'");
 
     // Aspect accessors
@@ -85,7 +86,8 @@ describe('vw_create_application_model — happy path', () => {
 
     expect(result.isError).toBeFalsy();
     expect(sources.length).toBe(1); // class def only
-    expect(sources[0]).toContain('subclass: #Minimal');
+    // defineClass: 8-kw form per s23 benchmark Bug 1 fix.
+    expect(sources[0]).toContain('Smalltalk.MyApp defineClass: #Minimal');
   });
 
   it('includes hook methods when provided', async () => {

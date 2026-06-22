@@ -10,24 +10,43 @@
  *   - AI never crafts raw Smalltalk → no apostrophe-escape bugs.
  *   - All identifier inputs are validated via `isValidClassIdentifier` /
  *     `isValidNamespaceIdentifier` → no Smalltalk injection.
- *   - The carry-forward #15 namespace-qualification trap is sidestepped:
- *     we emit fully-qualified `inDictionary:` forms.
+ *   - Namespace placement is via the `defineClass:` receiver
+ *     (`Smalltalk.<NS> defineClass: ...`), NOT a misnamed `inDictionary:`
+ *     keyword (which does not exist in Cincom VW — see s23 benchmark Bug 1).
+ *     Cross-namespace superclasses (e.g. `MyApp.Foo` extending
+ *     `UI.ApplicationModel`) are natively supported via `#{NS.Class}` literals.
  *   - The carry-forward #41 VWB.* wedge is refused fail-fast in the tool
  *     layer, not by the bridge (which would still wedge).
  *
- * Emitted form (per architecture.md §6.3):
+ * Emitted form (canonical Cincom VW `defineClass:` 8-kw, per s23 benchmark
+ * Bug 1 — the legacy 6-kw `subclass:...:inDictionary:category:` selector
+ * does NOT exist in this image; verified live false against `Object` and
+ * `ApplicationModel`):
  *
- *   <Superclass> subclass: #ClassName
+ *   Smalltalk.<Namespace> defineClass: #ClassName
+ *       superclass: #{<Superclass>}
+ *       indexedType: #none
+ *       private: false
  *       instanceVariableNames: 'iv1 iv2'
- *       classVariableNames: 'CV1 CV2'
- *       poolDictionaries: 'PD1'
- *       inDictionary: 'NamespaceName'
+ *       classInstanceVariableNames: ''
+ *       imports: ''
  *       category: 'My-Category'
  *
- * `category:` is omitted entirely when not provided (the form is still legal
- * as `inDictionary:` is the namespace placement; category is just UI grouping).
+ * Notes:
+ *   - Receiver is bare `Smalltalk` when namespace=Smalltalk, else
+ *     namespace-qualified `Smalltalk.<NS>`.
+ *   - Superclass literal: dotted forms used as-is in `#{<X.Y>}`; bare
+ *     identifiers prefixed `#{Smalltalk.<X>}` to rely on Smalltalk's
+ *     import chain to resolve `Core.*` classes.
+ *   - The 8-kw form has NO `classVariableNames` or `poolDictionaries`
+ *     keywords. Non-empty inputs for those legacy fields are rejected at
+ *     the handler layer with a migration hint (use `vw_compile_method`
+ *     against the metaclass or `imports:` for namespace-scoped sharing).
+ *   - `category:` is required by the 8-kw form; emit `category: ''` when
+ *     not provided.
  *
- * Per architecture.md §5.1 (tool 10) + §6.3 + §17 Appendix A.
+ * Per architecture.md §5.1 (tool 10) + §6.3 + §17 Appendix A — §6.3's
+ * `subclass:...inDictionary:...` snippet is superseded by the form above.
  */
 
 import { z } from 'zod';
@@ -99,22 +118,37 @@ export interface CreateClassInput {
 
 export function emitCreateClassSmalltalk(input: CreateClassInput): string {
   const ivars = (input.instanceVariableNames ?? []).join(' ');
-  const cvars = (input.classVariableNames ?? []).join(' ');
-  const pools = (input.poolDictionaries ?? []).join(' ');
 
-  const lines = [
-    `${input.superclass} subclass: #${input.className}`,
+  // Receiver: Smalltalk root namespace itself uses bare `Smalltalk`;
+  // child namespaces use `Smalltalk.<NS>` qualification.
+  const receiver =
+    input.namespace === 'Smalltalk'
+      ? 'Smalltalk'
+      : `Smalltalk.${input.namespace}`;
+
+  // Superclass literal: dotted forms used as-is in `#{<X.Y>}`; bare
+  // identifiers prefixed `#{Smalltalk.<X>}` to rely on Smalltalk's
+  // import chain to resolve `Core.*` classes (Object → Core.Object etc.).
+  const superLit = input.superclass.includes('.')
+    ? `#{${input.superclass}}`
+    : `#{Smalltalk.${input.superclass}}`;
+
+  // defineClass: 8-kw form REQUIRES category — emit empty string when omitted.
+  const category =
+    input.category !== undefined
+      ? quoteSmalltalkStringBody(input.category)
+      : '';
+
+  return [
+    `${receiver} defineClass: #${input.className}`,
+    `    superclass: ${superLit}`,
+    `    indexedType: #none`,
+    `    private: false`,
     `    instanceVariableNames: '${ivars}'`,
-    `    classVariableNames: '${cvars}'`,
-    `    poolDictionaries: '${pools}'`,
-    `    inDictionary: '${input.namespace}'`,
-  ];
-
-  if (input.category !== undefined) {
-    lines.push(`    category: '${quoteSmalltalkStringBody(input.category)}'`);
-  }
-
-  return lines.join('\n');
+    `    classInstanceVariableNames: ''`,
+    `    imports: ''`,
+    `    category: '${category}'`,
+  ].join('\n');
 }
 
 // -----------------------------------------------------------------------------
@@ -189,6 +223,28 @@ export function makeCreateClassTool(
         return errorResult(
           `vw_create_class refuses targets in the VWB namespace (carry-forward #41 — compile on VWB.* wedges the bridge via UI announcement fan-out). ` +
             'Pick a MAS application namespace instead. The bridge class is OFF-LIMITS for mid-/eval mutation.'
+        );
+      }
+
+      // -----------------------------------------------------------------------
+      // defineClass: 8-kw form limitations: no classVariableNames or
+      // poolDictionaries keywords exist (s23 benchmark Bug 1). The schema
+      // preserves those fields for backwards compatibility, but non-empty
+      // inputs are refused with a migration hint rather than silently
+      // dropped.
+      // -----------------------------------------------------------------------
+      if ((input.classVariableNames?.length ?? 0) > 0) {
+        return errorResult(
+          `vw_create_class: classVariableNames not supported by the canonical Cincom VW defineClass: 8-kw form. ` +
+            `The new emission uses Smalltalk.<NS> defineClass: ... (no classVariableNames keyword). ` +
+            `To add class variables to the created class, use vw_compile_method on its metaclass with addClassVarName: instead.`
+        );
+      }
+      if ((input.poolDictionaries?.length ?? 0) > 0) {
+        return errorResult(
+          `vw_create_class: poolDictionaries not supported by the canonical Cincom VW defineClass: 8-kw form. ` +
+            `The 8-kw form has imports: instead (namespace-scoped). ` +
+            `Use vw_compile_method to recompile the class with imports if needed, or migrate to namespace imports.`
         );
       }
 

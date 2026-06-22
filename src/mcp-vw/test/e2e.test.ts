@@ -289,7 +289,9 @@ describe('e2e — happy-path tool calls', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(lastSource).toContain('subclass: #Customer');
+    // defineClass: 8-kw form per s23 benchmark Bug 1 fix (was: 'subclass: #Customer').
+    expect(lastSource).toContain('Smalltalk defineClass: #Customer');
+    expect(lastSource).toContain('superclass: #{Smalltalk.Object}');
     expect(lastSource).toContain("instanceVariableNames: 'name email'");
   });
 

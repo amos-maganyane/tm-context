@@ -5,8 +5,54 @@ import {
 } from '../../src/codegen/class.js';
 import { stubBridge, firstText } from '../_helpers.js';
 
-describe('emitCreateClassSmalltalk — pure emitter', () => {
-  it('emits canonical subclass: form with single-segment names', () => {
+// -----------------------------------------------------------------------------
+// Pure emitter tests — canonical Cincom VW defineClass: 8-kw form.
+//
+// Rewritten per session 23 benchmark Bug 1: the legacy 6-kw
+//   `Object subclass: #X ... inDictionary: 'NS' category: '...'`
+// selector does NOT exist in Cincom VW 9.3.1 (verified live: false). The
+// canonical form actually understood by the image is:
+//
+//   Smalltalk.<NS> defineClass: #ClassName
+//       superclass: #{<Superclass>}
+//       indexedType: #none
+//       private: false
+//       instanceVariableNames: '...'
+//       classInstanceVariableNames: ''
+//       imports: ''
+//       category: '...'
+//
+// This 8-kw form has NO `classVariableNames` or `poolDictionaries` keywords;
+// non-empty inputs for those fields are now rejected at the handler layer.
+// -----------------------------------------------------------------------------
+
+describe('emitCreateClassSmalltalk — pure emitter (defineClass: form)', () => {
+  it('produces full canonical defineClass: 8-kw output for a typical class', () => {
+    const src = emitCreateClassSmalltalk({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'Object',
+      instanceVariableNames: ['bar', 'baz'],
+      classVariableNames: [],
+      poolDictionaries: [],
+      category: 'MyCat',
+    });
+
+    const expected = [
+      'Smalltalk defineClass: #Foo',
+      '    superclass: #{Smalltalk.Object}',
+      '    indexedType: #none',
+      '    private: false',
+      "    instanceVariableNames: 'bar baz'",
+      "    classInstanceVariableNames: ''",
+      "    imports: ''",
+      "    category: 'MyCat'",
+    ].join('\n');
+
+    expect(src).toBe(expected);
+  });
+
+  it('emits canonical defineClass: form with Smalltalk root namespace', () => {
     const src = emitCreateClassSmalltalk({
       className: 'Customer',
       namespace: 'Smalltalk',
@@ -17,15 +63,17 @@ describe('emitCreateClassSmalltalk — pure emitter', () => {
       category: 'MyApp-Model',
     });
 
-    expect(src).toContain('subclass: #Customer');
+    expect(src).toContain('Smalltalk defineClass: #Customer');
+    expect(src).toContain('superclass: #{Smalltalk.Object}');
+    expect(src).toContain('indexedType: #none');
+    expect(src).toContain('private: false');
     expect(src).toContain("instanceVariableNames: 'name email'");
-    expect(src).toContain("classVariableNames: ''");
-    expect(src).toContain("poolDictionaries: ''");
-    expect(src).toContain("inDictionary: 'Smalltalk'");
+    expect(src).toContain("classInstanceVariableNames: ''");
+    expect(src).toContain("imports: ''");
     expect(src).toContain("category: 'MyApp-Model'");
   });
 
-  it('handles empty instance + class variables', () => {
+  it('emits empty instanceVariableNames + classInstanceVariableNames + imports when not provided', () => {
     const src = emitCreateClassSmalltalk({
       className: 'Empty',
       namespace: 'Smalltalk',
@@ -36,7 +84,8 @@ describe('emitCreateClassSmalltalk — pure emitter', () => {
     });
 
     expect(src).toContain("instanceVariableNames: ''");
-    expect(src).toContain("classVariableNames: ''");
+    expect(src).toContain("classInstanceVariableNames: ''");
+    expect(src).toContain("imports: ''");
   });
 
   it('joins multiple instance variables with single space', () => {
@@ -45,28 +94,14 @@ describe('emitCreateClassSmalltalk — pure emitter', () => {
       namespace: 'Smalltalk',
       superclass: 'Object',
       instanceVariableNames: ['a', 'b', 'c', 'd'],
-      classVariableNames: ['X', 'Y'],
+      classVariableNames: [],
       poolDictionaries: [],
     });
 
     expect(src).toContain("instanceVariableNames: 'a b c d'");
-    expect(src).toContain("classVariableNames: 'X Y'");
   });
 
-  it('joins pool dictionaries with single space', () => {
-    const src = emitCreateClassSmalltalk({
-      className: 'Foo',
-      namespace: 'Smalltalk',
-      superclass: 'Object',
-      instanceVariableNames: [],
-      classVariableNames: [],
-      poolDictionaries: ['Pool1', 'Pool2'],
-    });
-
-    expect(src).toContain("poolDictionaries: 'Pool1 Pool2'");
-  });
-
-  it('omits category when not provided', () => {
+  it('emits empty category when not provided (defineClass: requires the keyword)', () => {
     const src = emitCreateClassSmalltalk({
       className: 'Foo',
       namespace: 'Smalltalk',
@@ -76,11 +111,10 @@ describe('emitCreateClassSmalltalk — pure emitter', () => {
       poolDictionaries: [],
     });
 
-    // No category line at all.
-    expect(src).not.toMatch(/category:\s*'/);
+    expect(src).toContain("category: ''");
   });
 
-  it('supports namespace-qualified superclass', () => {
+  it('uses Smalltalk.<NS> receiver for child namespace + uses dotted superclass as-is in #{}', () => {
     const src = emitCreateClassSmalltalk({
       className: 'Painter',
       namespace: 'MyApp',
@@ -90,8 +124,36 @@ describe('emitCreateClassSmalltalk — pure emitter', () => {
       poolDictionaries: [],
     });
 
-    expect(src.startsWith('Tools.UIPainter subclass: #Painter')).toBe(true);
-    expect(src).toContain("inDictionary: 'MyApp'");
+    expect(src.startsWith('Smalltalk.MyApp defineClass: #Painter')).toBe(true);
+    expect(src).toContain('superclass: #{Tools.UIPainter}');
+  });
+
+  it('prefixes bare superclass with Smalltalk. to leverage import chain', () => {
+    const src = emitCreateClassSmalltalk({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'OrderedCollection',
+      instanceVariableNames: [],
+      classVariableNames: [],
+      poolDictionaries: [],
+    });
+
+    // Bare identifier (no dot) gets the Smalltalk. prefix in the literal.
+    expect(src).toContain('superclass: #{Smalltalk.OrderedCollection}');
+  });
+
+  it('preserves namespace-qualified superclass starting with Smalltalk. as-is', () => {
+    const src = emitCreateClassSmalltalk({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'Smalltalk.Object',
+      instanceVariableNames: [],
+      classVariableNames: [],
+      poolDictionaries: [],
+    });
+
+    // Already-qualified superclass goes into the literal verbatim.
+    expect(src).toContain('superclass: #{Smalltalk.Object}');
   });
 
   it('escapes apostrophes in category', () => {
@@ -125,7 +187,7 @@ describe('vw_create_class — registration', () => {
 });
 
 describe('vw_create_class — happy path', () => {
-  it('posts emitted Smalltalk to /eval and returns success', async () => {
+  it('posts emitted defineClass: Smalltalk to /eval and returns success', async () => {
     const bridge = stubBridge({
       postEval: vi.fn().mockResolvedValue({ ok: true, result: 'Customer' }),
     });
@@ -145,8 +207,8 @@ describe('vw_create_class — happy path', () => {
     expect(firstText(result)).toMatch(/Customer|created/i);
     expect(bridge.postEval).toHaveBeenCalledTimes(1);
     const probe = vi.mocked(bridge.postEval).mock.calls[0]?.[0] ?? '';
-    expect(probe).toContain('subclass: #Customer');
-    expect(probe).toContain("inDictionary: 'Smalltalk'");
+    expect(probe).toContain('Smalltalk defineClass: #Customer');
+    expect(probe).toContain('superclass: #{Smalltalk.Object}');
   });
 
   it('uses sensible defaults for omitted fields', async () => {
@@ -163,8 +225,8 @@ describe('vw_create_class — happy path', () => {
 
     const probe = vi.mocked(bridge.postEval).mock.calls[0]?.[0] ?? '';
     expect(probe).toContain("instanceVariableNames: ''");
-    expect(probe).toContain("classVariableNames: ''");
-    expect(probe).toContain("poolDictionaries: ''");
+    expect(probe).toContain("classInstanceVariableNames: ''");
+    expect(probe).toContain("imports: ''");
   });
 });
 
@@ -258,6 +320,56 @@ describe('vw_create_class — validation', () => {
     expect(result.isError).toBe(true);
     expect(firstText(result)).toMatch(/instance|variable|identifier/i);
     expect(bridge.postEval).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-empty classVariableNames (defineClass: form has no classVariableNames keyword)', async () => {
+    const bridge = stubBridge();
+    const tool = makeCreateClassTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'Object',
+      classVariableNames: ['CV1'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toMatch(/classVariableNames|defineClass/i);
+    expect(bridge.postEval).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-empty poolDictionaries (defineClass: form has no poolDictionaries keyword)', async () => {
+    const bridge = stubBridge();
+    const tool = makeCreateClassTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'Object',
+      poolDictionaries: ['SomePool'],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toMatch(/poolDictionaries|defineClass|imports/i);
+    expect(bridge.postEval).not.toHaveBeenCalled();
+  });
+
+  it('still accepts empty classVariableNames + poolDictionaries arrays (backwards compat)', async () => {
+    const bridge = stubBridge({
+      postEval: vi.fn().mockResolvedValue({ ok: true, result: 'Foo' }),
+    });
+    const tool = makeCreateClassTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'Object',
+      classVariableNames: [],
+      poolDictionaries: [],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(bridge.postEval).toHaveBeenCalledTimes(1);
   });
 });
 

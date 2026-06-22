@@ -45,7 +45,7 @@ const compileClassDefSchema = {
     .min(1)
     .max(200_000)
     .describe(
-      'Full class definition source. Example: "Object subclass: #Foo instanceVariableNames: \'a b\' classVariableNames: \'\' poolDictionaries: \'\' inDictionary: \'MyApp\' category: \'foo\'"'
+      'Full class definition source. Canonical Cincom VW form: "Smalltalk.MyApp defineClass: #Foo superclass: #{Smalltalk.Object} indexedType: #none private: false instanceVariableNames: \'a b\' classInstanceVariableNames: \'\' imports: \'\' category: \'foo\'". The legacy 6-kw subclass:...inDictionary:category: selector does NOT exist in this image (s23 benchmark Bug 1).'
     ),
 };
 

@@ -30,8 +30,9 @@ describe('vw_create_dialog', () => {
     });
 
     expect(result.isError).toBeFalsy();
-    expect(sources[0]).toContain('SimpleDialog subclass: #ConfirmDialog');
-    expect(sources[0]).toContain("inDictionary: 'MyApp'");
+    // defineClass: 8-kw form per s23 benchmark Bug 1 fix.
+    expect(sources[0]).toContain('Smalltalk.MyApp defineClass: #ConfirmDialog');
+    expect(sources[0]).toContain('superclass: #{Smalltalk.SimpleDialog}');
   });
 
   it('accepts custom superclass override', async () => {
@@ -50,7 +51,10 @@ describe('vw_create_dialog', () => {
       superclass: 'MyApp.BaseDialog',
     });
 
-    expect(sources[0]).toContain('MyApp.BaseDialog subclass: #CustomDialog');
+    // defineClass: 8-kw form per s23 benchmark Bug 1 fix.
+    // Dotted superclass goes into the literal verbatim; receiver carries namespace.
+    expect(sources[0]).toContain('Smalltalk.MyApp defineClass: #CustomDialog');
+    expect(sources[0]).toContain('superclass: #{MyApp.BaseDialog}');
   });
 
   it('refuses VWB.* namespace', async () => {
