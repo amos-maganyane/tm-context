@@ -4,6 +4,7 @@ import {
   emitFullSpecLiteral,
   emitComponentLiteral,
   emitLayoutLiteral,
+  emitDataSetColumnLiteral,
   makeCreateWindowSpecTool,
 } from '../../src/codegen/windowSpec.js';
 import { stubBridge, firstText } from '../_helpers.js';
@@ -417,5 +418,197 @@ describe('vw_create_window_spec — guards', () => {
 
     expect(result.isError).toBe(true);
     expect(firstText(result)).toContain('undefined class');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// emitDataSetColumnLiteral — one DataSet column (s23 benchmark Bug 6)
+// -----------------------------------------------------------------------------
+
+describe('emitDataSetColumnLiteral — one DataSet column (s23 Bug 6)', () => {
+  it('emits canonical DataSetColumnSpec with required fields only', () => {
+    const out = emitDataSetColumnLiteral({
+      label: 'Source Fund',
+      width: 200,
+      readSelector: 'sourceFund',
+    });
+    expect(out).toBe(
+      "#(#{UI.DataSetColumnSpec} #label: 'Source Fund' #width: 200 #readSelector: #sourceFund)"
+    );
+  });
+
+  it('includes optional printSelector + alignment + type + menu', () => {
+    const out = emitDataSetColumnLiteral({
+      label: 'Qty',
+      width: 80,
+      readSelector: 'quantity',
+      printSelector: 'printString',
+      alignment: 'right',
+      type: 'number',
+      menu: 'qtyMenu',
+    });
+    expect(out).toContain('#printSelector: #printString');
+    expect(out).toContain('#alignment: #right');
+    expect(out).toContain('#type: #number');
+    expect(out).toContain('#menu: #qtyMenu');
+  });
+
+  it('escapes apostrophes in column label', () => {
+    const out = emitDataSetColumnLiteral({
+      label: "Mum's Cash",
+      width: 100,
+      readSelector: 'cash',
+    });
+    expect(out).toContain("#label: 'Mum''s Cash'");
+  });
+
+  it('omits optional fields when not provided', () => {
+    const out = emitDataSetColumnLiteral({
+      label: 'X',
+      width: 50,
+      readSelector: 'x',
+    });
+    expect(out).not.toContain('printSelector');
+    expect(out).not.toContain('alignment');
+    expect(out).not.toContain('#type:');
+    expect(out).not.toContain('menu');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// emitComponentLiteral — DataSet (s23 benchmark Bug 6 fix)
+// -----------------------------------------------------------------------------
+
+describe('emitComponentLiteral — DataSet (s23 Bug 6 fix)', () => {
+  it('emits canonical DataSetSpec with name + model + columns + layout', () => {
+    const out = emitComponentLiteral({
+      type: 'DataSet',
+      name: 'subInstructionsTable',
+      model: 'subInstructions',
+      columns: [
+        { label: 'Source', width: 100, readSelector: 'sourceFund' },
+        { label: 'Target', width: 100, readSelector: 'targetFund' },
+      ],
+      layout: { l: 20, lf: 0, t: 20, tf: 0, r: -20, rf: 1, b: -20, bf: 1 },
+    });
+    expect(out).toContain('#{UI.DataSetSpec}');
+    expect(out).toContain('#name: #subInstructionsTable');
+    expect(out).toContain('#model: #subInstructions');
+    expect(out).toContain('#columns:');
+    expect(out).toContain('#{UI.DataSetColumnSpec}');
+    expect(out).toContain('#layout: #(#{Graphics.LayoutFrame} 20 0 20 0 -20 1 -20 1)');
+    const colCount = (out.match(/#\{UI\.DataSetColumnSpec\}/g) ?? []).length;
+    expect(colCount).toBe(2);
+  });
+
+  it('emits multipleSelections + labelsAsButtons when provided', () => {
+    const out = emitComponentLiteral({
+      type: 'DataSet',
+      name: 't',
+      model: 'm',
+      columns: [{ label: 'X', width: 50, readSelector: 'x' }],
+      multipleSelections: true,
+      labelsAsButtons: false,
+      layout: { l: 0, lf: 0, t: 0, tf: 0, r: 0, rf: 0, b: 0, bf: 0 },
+    });
+    expect(out).toContain('#multipleSelections: true');
+    expect(out).toContain('#labelsAsButtons: false');
+  });
+
+  it('omits optional flags when not provided', () => {
+    const out = emitComponentLiteral({
+      type: 'DataSet',
+      name: 't',
+      model: 'm',
+      columns: [{ label: 'X', width: 50, readSelector: 'x' }],
+      layout: { l: 0, lf: 0, t: 0, tf: 0, r: 0, rf: 0, b: 0, bf: 0 },
+    });
+    expect(out).not.toContain('multipleSelections');
+    expect(out).not.toContain('labelsAsButtons');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// vw_create_window_spec — DataSet handler integration (s23 Bug 6)
+// -----------------------------------------------------------------------------
+
+describe('vw_create_window_spec — DataSet handler integration (s23 Bug 6)', () => {
+  it('accepts DataSet with valid columns and compiles', async () => {
+    let lastSource: string | undefined;
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        lastSource = s;
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateWindowSpecTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      window: { label: 'X', bounds: [0, 0, 800, 500] },
+      components: [
+        {
+          type: 'DataSet',
+          name: 'table',
+          model: 'rows',
+          columns: [
+            { label: 'A', width: 100, readSelector: 'fieldA' },
+            { label: 'B', width: 100, readSelector: 'fieldB', printSelector: 'printString' },
+          ],
+          layout: { l: 10, lf: 0, t: 10, tf: 0, r: -10, rf: 1, b: -10, bf: 1 },
+        },
+      ],
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(lastSource).toContain('UI.DataSetSpec');
+    expect(lastSource).toContain('UI.DataSetColumnSpec');
+    expect(lastSource).toContain('#columns:');
+  });
+
+  it('rejects DataSet with empty columns array', async () => {
+    const bridge = stubBridge();
+    const tool = makeCreateWindowSpecTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      window: { label: 'X', bounds: [0, 0, 100, 100] },
+      components: [
+        {
+          type: 'DataSet',
+          name: 't',
+          model: 'm',
+          columns: [],
+          layout: { l: 0, lf: 0, t: 0, tf: 0, r: 0, rf: 0, b: 0, bf: 0 },
+        },
+      ],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toMatch(/columns|DataSet/i);
+    expect(bridge.postEval).not.toHaveBeenCalled();
+  });
+
+  it('rejects DataSet column with invalid readSelector', async () => {
+    const bridge = stubBridge();
+    const tool = makeCreateWindowSpecTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      window: { label: 'X', bounds: [0, 0, 100, 100] },
+      components: [
+        {
+          type: 'DataSet',
+          name: 't',
+          model: 'm',
+          columns: [{ label: 'X', width: 50, readSelector: "bad'sel" }],
+          layout: { l: 0, lf: 0, t: 0, tf: 0, r: 0, rf: 0, b: 0, bf: 0 },
+        },
+      ],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(firstText(result)).toMatch(/readSelector/i);
+    expect(bridge.postEval).not.toHaveBeenCalled();
   });
 });

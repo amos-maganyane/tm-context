@@ -43,6 +43,24 @@ export interface Layout {
   bf: number;
 }
 
+/**
+ * A single column within a DataSet table (s23 benchmark Bug 6).
+ *
+ * DataSetColumnSpec writable properties verified live against
+ * `(UI.DataSetColumnSpec new respondsTo: #...)`:
+ *   - label, width, readSelector, printSelector, alignment, type, menu → true
+ *   - writeSelector, editable, displayWidget, showWidget → false (omitted)
+ */
+export interface DataSetColumn {
+  label: string;
+  width: number;
+  readSelector: string;
+  printSelector?: string;
+  alignment?: 'left' | 'right' | 'center';
+  type?: 'string' | 'number';
+  menu?: string;
+}
+
 interface BaseComponent {
   name?: string;
   layout: Layout;
@@ -72,6 +90,13 @@ export type Component =
   | (BaseComponent & { type: 'TextEditor'; model: string })
   | (BaseComponent & { type: 'GroupBox'; label?: string })
   | (BaseComponent & { type: 'Divider' })
+  | (BaseComponent & {
+      type: 'DataSet';
+      model: string;
+      columns: DataSetColumn[];
+      multipleSelections?: boolean;
+      labelsAsButtons?: boolean;
+    })
   | (BaseComponent & { type: 'SubCanvas'; model: string });
 
 export interface WindowProps {
@@ -104,6 +129,30 @@ export function emitLayoutLiteral(layout: Layout): string {
 }
 
 // -----------------------------------------------------------------------------
+// emitDataSetColumnLiteral — one DataSet column spec (s23 benchmark Bug 6)
+// -----------------------------------------------------------------------------
+
+export function emitDataSetColumnLiteral(col: DataSetColumn): string {
+  const parts: string[] = [`#{UI.DataSetColumnSpec}`];
+  parts.push(`#label: ${quoteSmalltalkString(col.label)}`);
+  parts.push(`#width: ${col.width}`);
+  parts.push(`#readSelector: #${col.readSelector}`);
+  if (col.printSelector !== undefined) {
+    parts.push(`#printSelector: #${col.printSelector}`);
+  }
+  if (col.alignment !== undefined) {
+    parts.push(`#alignment: #${col.alignment}`);
+  }
+  if (col.type !== undefined) {
+    parts.push(`#type: #${col.type}`);
+  }
+  if (col.menu !== undefined) {
+    parts.push(`#menu: #${col.menu}`);
+  }
+  return `#(${parts.join(' ')})`;
+}
+
+// -----------------------------------------------------------------------------
 // emitComponentLiteral — one widget spec
 // -----------------------------------------------------------------------------
 
@@ -121,6 +170,7 @@ const COMPONENT_SPEC_CLASS: Record<Component['type'], string> = {
   TextEditor: 'UI.TextEditorSpec',
   GroupBox: 'UI.GroupBoxSpec',
   Divider: 'UI.DividerSpec',
+  DataSet: 'UI.DataSetSpec',
   SubCanvas: 'UI.SubCanvasSpec',
 };
 
@@ -167,6 +217,18 @@ export function emitComponentLiteral(comp: Component): string {
     case 'SubCanvas':
       parts.push(`#model: #${comp.model}`);
       break;
+    case 'DataSet': {
+      parts.push(`#model: #${comp.model}`);
+      if (comp.multipleSelections !== undefined) {
+        parts.push(`#multipleSelections: ${comp.multipleSelections}`);
+      }
+      if (comp.labelsAsButtons !== undefined) {
+        parts.push(`#labelsAsButtons: ${comp.labelsAsButtons}`);
+      }
+      const colLiterals = comp.columns.map((c) => emitDataSetColumnLiteral(c)).join(' ');
+      parts.push(`#columns: #(${colLiterals})`);
+      break;
+    }
     case 'GroupBox':
       if (comp.label !== undefined) parts.push(`#label: ${quoteSmalltalkString(comp.label)}`);
       break;
@@ -258,6 +320,16 @@ const layoutSchema = z.object({
   bf: z.number(),
 });
 
+const dataSetColumnSchema = z.object({
+  label: z.string(),
+  width: z.number(),
+  readSelector: z.string(),
+  printSelector: z.string().optional(),
+  alignment: z.enum(['left', 'right', 'center']).optional(),
+  type: z.enum(['string', 'number']).optional(),
+  menu: z.string().optional(),
+});
+
 const componentSchema = z.object({
   type: z.enum([
     'Label',
@@ -273,6 +345,7 @@ const componentSchema = z.object({
     'GroupBox',
     'Divider',
     'SubCanvas',
+    'DataSet',
   ]),
   name: z.string().optional(),
   label: z.string().optional(),
@@ -283,6 +356,10 @@ const componentSchema = z.object({
   numChars: z.number().optional(),
   inputType: z.enum(['string', 'number', 'date']).optional(),
   select: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  // DataSet-specific (s23 benchmark Bug 6)
+  columns: z.array(dataSetColumnSchema).optional(),
+  multipleSelections: z.boolean().optional(),
+  labelsAsButtons: z.boolean().optional(),
 }).passthrough();
 
 const windowSchema = z.object({
@@ -317,7 +394,8 @@ const createWindowSpecSchema = {
 const TOOL_DESCRIPTION =
   'NATIVE-TYPED canvas/windowSpec emitter: takes structured JSON, emits the canonical literal-array form (the probe-3 design unlock), ' +
   'and compiles it as a class-side method on the target class. AI never sees `#{UI.FullSpec}` / `#{Graphics.LayoutFrame}` / PropertyListDictionary syntax. ' +
-  'Supports 13 component types (Label, ActionButton, InputField, CheckBox, RadioButton, ComboBox, SequenceView, TableView, TreeView, TextEditor, GroupBox, Divider, SubCanvas). ' +
+  'Supports 14 component types (Label, ActionButton, InputField, CheckBox, RadioButton, ComboBox, SequenceView, TableView, TreeView, TextEditor, GroupBox, Divider, SubCanvas, DataSet). ' +
+  'DataSet (column-based table per s23 benchmark Bug 6) requires `model` (aspect returning a SelectionInList of row objects) plus `columns: [{label, width, readSelector, printSelector?, alignment?, type?, menu?}]`. ' +
   'Layout uses {l, lf, t, tf, r, rf, b, bf} offset+fraction form. Refuses VWB.* targets (#41).';
 
 export function makeCreateWindowSpecTool(
@@ -359,6 +437,33 @@ export function makeCreateWindowSpecTool(
           return errorResult(
             `vw_create_window_spec: invalid model symbol "${comp.model}" on widget "${comp.name ?? '(unnamed)'}".`
           );
+        }
+        // DataSet-specific validation (s23 benchmark Bug 6): non-empty columns +
+        // per-column selector identifiers.
+        if (comp.type === 'DataSet') {
+          const columns = comp.columns;
+          if (!Array.isArray(columns) || columns.length === 0) {
+            return errorResult(
+              `vw_create_window_spec: DataSet "${comp.name ?? '(unnamed)'}" requires a non-empty columns array.`
+            );
+          }
+          for (const col of columns) {
+            if (!/^[a-z_][A-Za-z0-9_]*$/.test(col.readSelector)) {
+              return errorResult(
+                `vw_create_window_spec: DataSet column "${col.label}" has invalid readSelector "${col.readSelector}". Must be a unary identifier selector.`
+              );
+            }
+            if (col.printSelector !== undefined && !/^[a-z_][A-Za-z0-9_]*$/.test(col.printSelector)) {
+              return errorResult(
+                `vw_create_window_spec: DataSet column "${col.label}" has invalid printSelector "${col.printSelector}".`
+              );
+            }
+            if (col.menu !== undefined && !/^[a-z_][A-Za-z0-9_]*$/.test(col.menu)) {
+              return errorResult(
+                `vw_create_window_spec: DataSet column "${col.label}" has invalid menu "${col.menu}".`
+              );
+            }
+          }
         }
       }
 
