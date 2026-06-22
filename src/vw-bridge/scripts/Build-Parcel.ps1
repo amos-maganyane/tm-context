@@ -104,7 +104,13 @@ if (-not $bridgeHome) {
 }
 $env:VW_RUNTIME_API_HOME = $bridgeHome
 
-$tokenFile = Join-Path $bridgeHome '.token'
+# v1.0.0: token lives at production-grade location per VWBridge.st tokenStateDir.
+# Mirror that resolution: LOCALAPPDATA env var, fallback to USERPROFILE\AppData\Local.
+$localAppData = $env:LOCALAPPDATA
+if (-not $localAppData) {
+    $localAppData = Join-Path $env:USERPROFILE 'AppData\Local'
+}
+$tokenFile = Join-Path $localAppData 'Enviro365\vw-runtime-api\token'
 if (-not (Test-Path -LiteralPath $tokenFile)) {
     Write-Bad ".token not found at $tokenFile - is the bridge running? Launch via Start-VWBridge.bat first."
     exit 1

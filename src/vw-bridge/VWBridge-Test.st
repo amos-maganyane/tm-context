@@ -336,13 +336,16 @@ testClearVwBridgeHomeOverrideRestoresEnvLookup
 		description: 'after clear, vwBridgeHome should not return the cleared override value']
 		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
-testTokenFilePathDerivesFromVwBridgeHome
-	"v0.9.2 Phase P P1: tokenFilePath returns vwBridgeHome with .token
-	 appended via backslash. Hermetic via override seam."
-	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\install'.
-	 self assert: VWB.VWBridge tokenFilePath = 'C:\test\install\.token'
-		description: 'tokenFilePath should be vwBridgeHome , backslash , .token']
-		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
+testTokenFilePathDerivesFromTokenStateDir
+	"v1.0.0: tokenFilePath = tokenStateDir , backslash , token.
+	 tokenStateDir resolves %LOCALAPPDATA%\Enviro365\vw-runtime-api.
+	 No longer flows through vwBridgeHome - production-grade state path."
+	| path |
+	path := VWB.VWBridge tokenFilePath.
+	self assert: (path indexOfSubCollection: '\Enviro365\vw-runtime-api\token' startingAt: 1) > 0
+		description: 'tokenFilePath should end with \Enviro365\vw-runtime-api\token. Got: ' , path.
+	self assert: (path indexOfSubCollection: '\AppData\Local' startingAt: 1) > 0
+		description: 'tokenFilePath should contain \AppData\Local. Got: ' , path!
 
 testLogFilePathDerivesFromVwBridgeHome
 	"v0.9.2 Phase P P1: logFilePath returns vwBridgeHome with vw-runtime-api.log

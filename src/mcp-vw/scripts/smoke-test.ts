@@ -19,7 +19,7 @@
 import { spawn } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -31,10 +31,18 @@ const projectRoot = resolve(__dirname, '..');
 const entryPoint = resolve(projectRoot, 'dist', 'src', 'index.js');
 
 const BRIDGE_URL = process.env['VW_RUNTIME_API_URL'] ?? 'http://127.0.0.1:9876';
-const VW_RUNTIME_API_HOME = process.env['VW_RUNTIME_API_HOME'];
-const TOKEN_FILE =
-  process.env['VW_RUNTIME_API_TOKEN_FILE'] ??
-  (VW_RUNTIME_API_HOME ? join(VW_RUNTIME_API_HOME, '.token') : undefined);
+
+// Production-grade default token location, mirrors mcp-vw resolveDefaultTokenFile
+// and VWBridge.st>>tokenStateDir. %LOCALAPPDATA%\Enviro365\vw-runtime-api\token
+// on Windows. Falls back to %USERPROFILE%\AppData\Local if LOCALAPPDATA unset.
+function defaultTokenFile(): string {
+  const localAppData =
+    process.env['LOCALAPPDATA'] ??
+    join(process.env['USERPROFILE'] ?? homedir(), 'AppData', 'Local');
+  return join(localAppData, 'Enviro365', 'vw-runtime-api', 'token');
+}
+
+const TOKEN_FILE = process.env['VW_RUNTIME_API_TOKEN_FILE'] ?? defaultTokenFile();
 
 interface TestStep {
   name: string;
@@ -101,7 +109,7 @@ async function main(): Promise<void> {
   }
   if (!TOKEN_FILE || !existsSync(TOKEN_FILE)) {
     console.error(
-      `FATAL: token file not found at ${TOKEN_FILE}. Set VW_RUNTIME_API_TOKEN_FILE or VW_RUNTIME_API_HOME.`
+      `FATAL: token file not found at ${TOKEN_FILE}. Set VW_RUNTIME_API_TOKEN_FILE to override, or start the bridge (Start-VWBridge.ps1 -KillExisting) so it writes to the default %LOCALAPPDATA%\\Enviro365\\vw-runtime-api\\token path.`
     );
     process.exit(1);
   }

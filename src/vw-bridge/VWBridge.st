@@ -152,9 +152,28 @@ clearVwBridgeHomeOverride
 	vwBridgeHomeOverride := nil!
 
 tokenFilePath
-	"v0.9.2 Phase P P1: canonical path to the .token file. Derived from
-	 vwBridgeHome. Replaces hardcoded literal in the auto-start chunk."
-	^self vwBridgeHome , '\.token'!
+	"v1.0.0: canonical path to the token file. Production-grade location
+	 under %LOCALAPPDATA%\Enviro365\vw-runtime-api\token. Replaces the
+	 previous vwBridgeHome , '\.token' path which mixed ephemeral runtime
+	 state into the source install directory. Microsoft-documented home
+	 for per-user, non-roaming application data."
+	^self tokenStateDir , '\token'!
+
+tokenStateDir
+	"v1.0.0: production-grade token state directory. Microsoft-documented
+	 location for per-user non-roaming app state. Brand-scoped subdir so
+	 future Enviro365 products can colocate. Resolution order:
+	 1. LOCALAPPDATA env var, then \Enviro365\vw-runtime-api appended
+	 2. USERPROFILE\AppData\Local fallback if LOCALAPPDATA somehow unset
+	 3. Raise actionable error if neither is set"
+	| env localAppData userProfile |
+	env := OS.CEnvironment userEnvironment.
+	localAppData := env at: 'LOCALAPPDATA' ifAbsent: [nil].
+	localAppData isNil ifTrue: [
+		userProfile := env at: 'USERPROFILE' ifAbsent: [
+			self error: 'Neither LOCALAPPDATA nor USERPROFILE env var is set; cannot resolve token state directory.'].
+		localAppData := userProfile , '\AppData\Local'].
+	^localAppData , '\Enviro365\vw-runtime-api'!
 
 logFilePath
 	"v0.9.2 Phase P P1: canonical path to vw-runtime-api.log. Derived from

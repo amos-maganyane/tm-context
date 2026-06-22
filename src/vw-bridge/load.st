@@ -61,8 +61,14 @@ oldVwBridge := Smalltalk at: #VWBridge ifAbsent: [nil].
  already-running bridge gets cleanly restarted with a fresh token."
 VWB.VWBridge start.
 
-"(5) Write .token file for agent pickup. Defensive against write-stream failure."
+"(5) Write token file for agent pickup. v1.0.0: token lives at
+ %LOCALAPPDATA%\Enviro365\vw-runtime-api\token. Ensure directory chain
+ exists before writing (first-run scenario). Defensive against
+ write-stream failure throughout."
 tokenPath := VWB.VWBridge tokenFilePath.
+[tokenPath asFilename directory ensureDirectory]
+    on: Core.Error do: [:ex |
+        Transcript show: 'WARN: could not ensure token state directory: ' , ex description; cr].
 tokenStream := [tokenPath asFilename writeStream] on: Core.Error do: [:ex | nil].
 tokenStream == nil
     ifTrue: [Transcript show: 'WARN: could not write .token file (', tokenPath, ') - copy token manually from Transcript'; cr]

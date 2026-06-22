@@ -74,8 +74,7 @@ function resolveConfig(): Config {
 
   const tokenFile =
     process.env['VW_RUNTIME_API_TOKEN_FILE'] ??
-    deriveDefaultTokenFile() ??
-    join(homedir(), '.vw-bridge.token');
+    resolveDefaultTokenFile();
 
   const lockFile = process.env['MCP_VW_LOCK_FILE'] ?? join(tmpdir(), 'mcp-vw.lock');
 
@@ -89,11 +88,19 @@ function resolveConfig(): Config {
   return { bridgeUrl, tokenFile, lockFile, singleOwner };
 }
 
-/** Best-effort: VW_RUNTIME_API_HOME + /.token if the env var is set. */
-function deriveDefaultTokenFile(): string | undefined {
-  const home = process.env['VW_RUNTIME_API_HOME'];
-  if (!home) return undefined;
-  return join(home, '.token');
+/**
+ * Production-grade default token file location.
+ * %LOCALAPPDATA%\Enviro365\vw-runtime-api\token on Windows. Microsoft-documented
+ * home for per-user, non-roaming application state. Brand-scoped subdir so
+ * future Enviro365 products can colocate. Mirrors VWBridge.st>>tokenStateDir.
+ * Falls back to %USERPROFILE%\AppData\Local if LOCALAPPDATA is somehow unset,
+ * then to the Node homedir() as a last resort.
+ */
+function resolveDefaultTokenFile(): string {
+  const localAppData =
+    process.env['LOCALAPPDATA'] ??
+    join(process.env['USERPROFILE'] ?? homedir(), 'AppData', 'Local');
+  return join(localAppData, 'Enviro365', 'vw-runtime-api', 'token');
 }
 
 /** All 48 tool factories collected into one array (18 MVP + 13 V2 + 17 V3). */

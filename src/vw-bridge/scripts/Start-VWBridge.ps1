@@ -190,7 +190,14 @@ if ($Mode -eq 'FileIn') {
         $parcelPath = Join-Path $bridgeHome 'parcels\VWBridge.pcl'
     }
 }
-$tokenFile = Join-Path $bridgeHome '.token'
+# v1.0.0: token lives at production-grade location per VWBridge.st tokenStateDir.
+# Mirror that resolution: LOCALAPPDATA env var, fallback to USERPROFILE\AppData\Local.
+# No longer mixed into $bridgeHome (the source install dir).
+$localAppData = $env:LOCALAPPDATA
+if (-not $localAppData) {
+    $localAppData = Join-Path $env:USERPROFILE 'AppData\Local'
+}
+$tokenFile = Join-Path $localAppData 'Enviro365\vw-runtime-api\token'
 
 $requiredFiles = @($vwnt, $image, $sourceSt)
 if ($Mode -eq 'Parcel') { $requiredFiles += $parcelPath }

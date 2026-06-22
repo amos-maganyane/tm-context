@@ -73,18 +73,14 @@ Write-Host "[install-mcp-vw] mcp-vw entry: $entryPoint"
 # -----------------------------------------------------------------------------
 
 if (-not $TokenFile) {
-    $vwBridgeHome = $env:VW_RUNTIME_API_HOME
-    if (-not $vwBridgeHome) {
-        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'User')
+    # v1.0.0: token lives at production-grade location per VWBridge.st tokenStateDir.
+    # Microsoft-documented home for per-user non-roaming app state. Brand-scoped.
+    # No longer requires VW_RUNTIME_API_HOME for resolution.
+    $localAppData = $env:LOCALAPPDATA
+    if (-not $localAppData) {
+        $localAppData = Join-Path $env:USERPROFILE 'AppData\Local'
     }
-    if (-not $vwBridgeHome) {
-        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'Machine')
-    }
-    if ($vwBridgeHome) {
-        $TokenFile = Join-Path $vwBridgeHome '.token'
-    } else {
-        throw "[install-mcp-vw] -TokenFile not provided and VW_RUNTIME_API_HOME env var is not set. Either pass -TokenFile or set VW_RUNTIME_API_HOME."
-    }
+    $TokenFile = Join-Path $localAppData 'Enviro365\vw-runtime-api\token'
 }
 Write-Host "[install-mcp-vw] Token file: $TokenFile"
 

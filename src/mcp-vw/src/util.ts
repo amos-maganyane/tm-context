@@ -184,7 +184,7 @@ function formatHttpStatus(err: BridgeError): string {
   if (status === 401) {
     return (
       `VW Runtime API rejected the auth token (HTTP 401). The bridge rotates this on every cold start — ` +
-      `re-read $VW_RUNTIME_API_TOKEN_FILE (default src/vw-bridge/.token) and retry. ` +
+      `re-read $VW_RUNTIME_API_TOKEN_FILE (default %LOCALAPPDATA%\\Enviro365\\vw-runtime-api\\token) and retry. ` +
       `If the file is stale, restart the bridge (Start-VWBridge.bat).`
     );
   }
