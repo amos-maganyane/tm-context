@@ -5,7 +5,7 @@
 
 .DESCRIPTION
     Detects Claude Desktop install (MSIX or non-MSIX) and writes the
-    `vw-bridge` entry into `claude_desktop_config.json`. Handles the
+    `vw-mcp` entry into `claude_desktop_config.json`. Handles the
     Windows MSIX path landmine where Claude Desktop runs out of
     %LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\ instead
     of the conventional %APPDATA%\Claude\.
@@ -139,7 +139,7 @@ if (-not $existing.PSObject.Properties.Match('mcpServers').Count) {
 }
 
 # -----------------------------------------------------------------------------
-# Build the vw-bridge entry
+# Build the vw-mcp entry
 # -----------------------------------------------------------------------------
 
 $entry = [pscustomobject]@{
@@ -153,12 +153,12 @@ $entry = [pscustomobject]@{
 }
 
 # Add or overwrite (idempotent).
-if ($existing.mcpServers.PSObject.Properties.Match('vw-bridge').Count) {
-    $existing.mcpServers.'vw-bridge' = $entry
-    Write-Host "[install-mcp-vw] Overwriting existing vw-bridge entry (idempotent re-install)."
+if ($existing.mcpServers.PSObject.Properties.Match('vw-mcp').Count) {
+    $existing.mcpServers.'vw-mcp' = $entry
+    Write-Host "[install-mcp-vw] Overwriting existing vw-mcp entry (idempotent re-install)."
 } else {
-    $existing.mcpServers | Add-Member -NotePropertyName 'vw-bridge' -NotePropertyValue $entry -Force
-    Write-Host "[install-mcp-vw] Adding new vw-bridge entry."
+    $existing.mcpServers | Add-Member -NotePropertyName 'vw-mcp' -NotePropertyValue $entry -Force
+    Write-Host "[install-mcp-vw] Adding new vw-mcp entry."
 }
 
 # -----------------------------------------------------------------------------
@@ -184,4 +184,4 @@ if ($PSCmdlet.ShouldProcess($configFile, 'Write claude_desktop_config.json')) {
 
 Write-Host ""
 Write-Host "[install-mcp-vw] Done. Restart Claude Desktop to pick up the new server."
-Write-Host "[install-mcp-vw] After restart, the 'vw-bridge' server should appear with 18 tools."
+Write-Host "[install-mcp-vw] After restart, the 'vw-mcp' server should appear with 18 tools."

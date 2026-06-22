@@ -57,7 +57,7 @@ import { makeWaitTools } from './tools/wait.js';
 import { makeScreenshotTools } from './tools/screenshot.js';
 import { makeCreateParcelTool } from './codegen/parcel.js';
 
-const SERVER_NAME = 'vw-bridge';
+const SERVER_NAME = 'vw-mcp';
 const SERVER_VERSION = '0.3.0'; // V3 — 48 tools (full architecture.md v2 surface)
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:9876';
 const EXIT_SINGLE_OWNER_HELD = 75; // EX_TEMPFAIL per BSD sysexits.h

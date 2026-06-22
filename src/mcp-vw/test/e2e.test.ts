@@ -142,7 +142,7 @@ async function bootServer(bridgeOverrides?: Parameters<typeof stubBridge>[0]): P
   const bridge = stubBridge(bridgeOverrides);
   const tools = buildAllTools(bridge);
 
-  const server = new McpServer({ name: 'vw-bridge', version: '0.1.0-test' });
+  const server = new McpServer({ name: 'vw-mcp', version: '0.1.0-test' });
   for (const tool of tools) {
     server.registerTool(
       tool.name,
