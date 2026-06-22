@@ -129,15 +129,17 @@ decrementDispatchDepthFor: aProcess
 vwBridgeHome
 	"v0.9.2 Phase P P1: bridge install root directory. Resolution order:
 	 1. vwBridgeHomeOverride class ivar (test seam set via vwBridgeHomeOverride:)
-	 2. VW_BRIDGE_HOME env var via OS.CEnvironment userEnvironment
+	 2. VW_RUNTIME_API_HOME env var via OS.CEnvironment userEnvironment
 	 3. Raise actionable error if neither is set
 	 Externalizes the previously-hardcoded install path so the bridge is
-	 deployable on any machine. Set VW_BRIDGE_HOME before launching vwnt.exe
-	 or in the running image via OS.CEnvironment userEnvironmentAt:put:."
+	 deployable on any machine. Set VW_RUNTIME_API_HOME before launching vwnt.exe
+	 or in the running image via OS.CEnvironment userEnvironmentAt:put:.
+	 v1.0.0: env var renamed from VW_BRIDGE_HOME to VW_RUNTIME_API_HOME to
+	 match the @enviro365/vw-runtime-api npm package brand."
 	vwBridgeHomeOverride isNil ifFalse: [^vwBridgeHomeOverride].
 	^OS.CEnvironment userEnvironment
-		at: 'VW_BRIDGE_HOME'
-		ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set. Set it to the bridge install directory before launching vwnt.exe, OR call VWBridge vwBridgeHomeOverride: aPath to inject at runtime.']!
+		at: 'VW_RUNTIME_API_HOME'
+		ifAbsent: [self error: 'VW_RUNTIME_API_HOME env var is not set. Set it to the runtime install directory before launching vwnt.exe, OR call VWBridge vwBridgeHomeOverride: aPath to inject at runtime.']!
 
 vwBridgeHomeOverride: aPath
 	"Test seam: set vwBridgeHome to aPath without mutating OS env. Pair
@@ -155,10 +157,10 @@ tokenFilePath
 	^self vwBridgeHome , '\.token'!
 
 logFilePath
-	"v0.9.2 Phase P P1: canonical path to vw-bridge.log. Derived from
+	"v0.9.2 Phase P P1: canonical path to vw-runtime-api.log. Derived from
 	 vwBridgeHome. The instance-side logFilePath delegates here so all
 	 paths flow through one source of truth."
-	^self vwBridgeHome , '\vw-bridge.log'!
+	^self vwBridgeHome , '\vw-runtime-api.log'!
 
 screenshotHelperScriptPath
 	"v0.9.2 Phase P P3: canonical path to scripts/screenshot-helper.ps1.
@@ -243,7 +245,7 @@ errorClass
 
 log: aString
 	"Backward-compatible info-level log. v0.8.13 multiplexes Transcript
-	 (with [info] prefix) AND appends an NDJSON line to vw-bridge.log
+	 (with [info] prefix) AND appends an NDJSON line to vw-runtime-api.log
 	 next to .token. Existing 9 callers in this file keep working unchanged."
 	^self log: aString level: 'info'!
 
@@ -261,7 +263,7 @@ beginsWithIgnoreCase: aString prefix: aPrefix
 log: aString level: aLevel
 	"v0.8.13 multiplexed log sink. Writes to Transcript (with [level] prefix,
 	 preserving the legacy behavior of log:) AND appends a JSON-line entry
-	 to vw-bridge.log. If either sink fails, the other is still attempted.
+	 to vw-runtime-api.log. If either sink fails, the other is still attempted.
 	 No exceptions propagate out of this method - logging must never crash
 	 the bridge."
 	| t |

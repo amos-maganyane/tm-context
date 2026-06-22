@@ -1,9 +1,9 @@
 /**
- * bridge.ts — HTTP client for the VW Bridge.
+ * bridge.ts — HTTP client for the VW Runtime API.
  *
  * Responsibilities:
  *
- *   1. **Auth + token rotation** — Reads $VW_BRIDGE_TOKEN_FILE on every call,
+ *   1. **Auth + token rotation** — Reads $VW_RUNTIME_API_TOKEN_FILE on every call,
  *      using `fs.stat` mtime as a cheap cache check (~0.1ms on Windows).
  *      When the file's mtime changes, the cached token is invalidated and re-read.
  *
@@ -242,7 +242,7 @@ export class BridgeClient implements BridgeClientLike {
   // -------------------------------------------------------------------------
 
   /**
-   * Read the auth token from $VW_BRIDGE_TOKEN_FILE, caching on `mtimeMs`.
+   * Read the auth token from $VW_RUNTIME_API_TOKEN_FILE, caching on `mtimeMs`.
    * Cost: one `fs.stat` per call (~0.1ms on Windows). Worth it for transparent
    * rotation handling without polling.
    */

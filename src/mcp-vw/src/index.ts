@@ -2,7 +2,7 @@
  * index.ts — mcp-vw stdio server entry point.
  *
  * Boot sequence:
- *   1. Resolve config from env (VW_BRIDGE_URL, VW_BRIDGE_TOKEN_FILE,
+ *   1. Resolve config from env (VW_RUNTIME_API_URL, VW_RUNTIME_API_TOKEN_FILE,
  *      MCP_VW_SINGLE_OWNER, MCP_VW_LOCK_FILE).
  *   2. Acquire single-owner lock. Exit code 75 (EX_TEMPFAIL) if another
  *      live mcp-vw already holds it (architecture.md §9).
@@ -70,10 +70,10 @@ interface Config {
 }
 
 function resolveConfig(): Config {
-  const bridgeUrl = process.env['VW_BRIDGE_URL'] ?? DEFAULT_BRIDGE_URL;
+  const bridgeUrl = process.env['VW_RUNTIME_API_URL'] ?? DEFAULT_BRIDGE_URL;
 
   const tokenFile =
-    process.env['VW_BRIDGE_TOKEN_FILE'] ??
+    process.env['VW_RUNTIME_API_TOKEN_FILE'] ??
     deriveDefaultTokenFile() ??
     join(homedir(), '.vw-bridge.token');
 
@@ -89,9 +89,9 @@ function resolveConfig(): Config {
   return { bridgeUrl, tokenFile, lockFile, singleOwner };
 }
 
-/** Best-effort: VW_BRIDGE_HOME + /.token if the env var is set. */
+/** Best-effort: VW_RUNTIME_API_HOME + /.token if the env var is set. */
 function deriveDefaultTokenFile(): string | undefined {
-  const home = process.env['VW_BRIDGE_HOME'];
+  const home = process.env['VW_RUNTIME_API_HOME'];
   if (!home) return undefined;
   return join(home, '.token');
 }

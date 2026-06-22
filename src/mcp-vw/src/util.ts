@@ -14,7 +14,7 @@
  *
  *   3. **Recovery-action errors** — `BridgeError` + `formatBridgeError()`
  *      turn raw HTTP / network failures into messages that say what the
- *      AI should do next ("re-read $VW_BRIDGE_TOKEN_FILE", "restart via
+ *      AI should do next ("re-read $VW_RUNTIME_API_TOKEN_FILE", "restart via
  *      Start-VWBridge.bat", "carry-forward #41 — would wedge"). The AI
  *      reading the error text can act without round-tripping.
  *
@@ -87,7 +87,7 @@ export function safeHandler<I>(
 }
 
 /**
- * Domain error for HTTP failures against the VW Bridge.
+ * Domain error for HTTP failures against the VW Runtime API.
  *
  * - `status` = HTTP status code (or 0 for network-level failures).
  * - `bodyText` = response body (truncated in `.message`, full in `.bodyText`).
@@ -125,7 +125,7 @@ export function formatBridgeError(err: unknown): string {
   if (err instanceof Error) {
     if (err.name === 'AbortError') {
       return (
-        `Request to VW Bridge timed out. The bridge may be wedged (carry-forward #41 — compile-on-VWB.*) ` +
+        `Request to VW Runtime API timed out. The bridge may be wedged (carry-forward #41 — compile-on-VWB.*) ` +
         `or the /eval body may be long-running. Consider increasing the timeout, breaking work into smaller probes, ` +
         `or restarting the bridge (Start-VWBridge.bat -KillExisting).`
       );
@@ -136,25 +136,25 @@ export function formatBridgeError(err: unknown): string {
       const code = cause?.code;
       if (code === 'ECONNREFUSED') {
         return (
-          `VW Bridge is not responding (ECONNREFUSED). Check that the VisualWorks image is running ` +
+          `VW Runtime API is not responding (ECONNREFUSED). Check that the VisualWorks image is running ` +
           `and the bridge is started. Run Start-VWBridge.bat (or Start-VWBridge.ps1) to launch it. ` +
-          `Ensure VW_BRIDGE_HOME is set in your User env vars.`
+          `Ensure VW_RUNTIME_API_HOME is set in your User env vars.`
         );
       }
       if (code === 'ETIMEDOUT' || code === 'ENETUNREACH' || code === 'EHOSTUNREACH') {
         return (
-          `VW Bridge is unreachable (${code}). Check the bridge URL configuration and that ` +
+          `VW Runtime API is unreachable (${code}). Check the bridge URL configuration and that ` +
           `the VisualWorks image is healthy. /health should respond within seconds when up.`
         );
       }
       if (code === 'ENOTFOUND') {
         return (
-          `VW Bridge hostname could not be resolved (ENOTFOUND). Bridge URL is misconfigured — ` +
+          `VW Runtime API hostname could not be resolved (ENOTFOUND). Bridge URL is misconfigured — ` +
           `expected http://127.0.0.1:9876.`
         );
       }
       return (
-        `VW Bridge is down or unreachable (${code ?? 'fetch failed'}). Check /health and restart ` +
+        `VW Runtime API is down or unreachable (${code ?? 'fetch failed'}). Check /health and restart ` +
         `via Start-VWBridge.bat if needed.`
       );
     }
@@ -177,51 +177,51 @@ function formatHttpStatus(err: BridgeError): string {
 
   if (status === 0) {
     return (
-      `VW Bridge is not responding at the configured URL. Check that the VisualWorks image ` +
+      `VW Runtime API is not responding at the configured URL. Check that the VisualWorks image ` +
       `is running and the bridge is started (Start-VWBridge.bat).`
     );
   }
   if (status === 401) {
     return (
-      `VW Bridge rejected the auth token (HTTP 401). The bridge rotates this on every cold start — ` +
-      `re-read $VW_BRIDGE_TOKEN_FILE (default src/vw-bridge/.token) and retry. ` +
+      `VW Runtime API rejected the auth token (HTTP 401). The bridge rotates this on every cold start — ` +
+      `re-read $VW_RUNTIME_API_TOKEN_FILE (default src/vw-bridge/.token) and retry. ` +
       `If the file is stale, restart the bridge (Start-VWBridge.bat).`
     );
   }
   if (status === 403) {
     return (
-      `VW Bridge refused the request (HTTP 403). Verify the token in $VW_BRIDGE_TOKEN_FILE matches ` +
+      `VW Runtime API refused the request (HTTP 403). Verify the token in $VW_RUNTIME_API_TOKEN_FILE matches ` +
       `the running bridge instance, and check the bridge log for the rejection reason.`
     );
   }
   if (status === 404) {
     return (
-      `VW Bridge endpoint not found (HTTP 404). The bridge may be an older version without this endpoint. ` +
+      `VW Runtime API endpoint not found (HTTP 404). The bridge may be an older version without this endpoint. ` +
       `Check /version (auth-exempt) and update if needed.`
     );
   }
   if (status === 408 || status === 504) {
     return (
-      `VW Bridge timed out (HTTP ${status}). The /eval body may be hung in a wedge — ` +
+      `VW Runtime API timed out (HTTP ${status}). The /eval body may be hung in a wedge — ` +
       `see carry-forward #41 (compile-on-VWB.* wedges via UI announcement fan-out) ` +
       `or #28 (Bug #5 recursive dispatch inherent limit). Restart via Start-VWBridge.bat -KillExisting.`
     );
   }
   if (status === 429) {
     return (
-      `VW Bridge rate-limited the request (HTTP 429). Back off and retry. ` +
+      `VW Runtime API rate-limited the request (HTTP 429). Back off and retry. ` +
       `If this is a tight loop, batch the work into a single /eval probe instead.`
     );
   }
   if (status >= 500) {
     return (
-      `VW Bridge server error (HTTP ${status}): ${bodyText.slice(0, 300)}. ` +
+      `VW Runtime API server error (HTTP ${status}): ${bodyText.slice(0, 300)}. ` +
       `The bridge may have crashed mid-request — check /health, then restart via Start-VWBridge.bat -KillExisting if needed.`
     );
   }
   if (status >= 400) {
     const bodyHint = bodyText ? `: ${bodyText.slice(0, 300)}` : '';
-    return `VW Bridge rejected the request (HTTP ${status})${bodyHint}.`;
+    return `VW Runtime API rejected the request (HTTP ${status})${bodyHint}.`;
   }
   return err.message;
 }

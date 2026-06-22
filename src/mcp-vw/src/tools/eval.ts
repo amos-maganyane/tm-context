@@ -39,7 +39,7 @@ const inputSchema = {
 };
 
 const TOOL_DESCRIPTION =
-  'Evaluate arbitrary Smalltalk source via the VW Bridge /eval endpoint. ' +
+  'Evaluate arbitrary Smalltalk source via the VW Runtime API /eval endpoint. ' +
   'ESCAPE HATCH — prefer the typed tools FIRST: vw_create_class to create classes, ' +
   'vw_compile_method (V2) to add methods, vw_create_window_spec (V2) to build UI, ' +
   'vw_list_namespaces / vw_get_class_definition / vw_list_methods to read code. ' +

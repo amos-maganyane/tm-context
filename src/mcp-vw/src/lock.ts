@@ -2,7 +2,7 @@
  * lock.ts — Single-owner enforcement via lockfile + PID + stale-PID recovery.
  *
  * Goal: prevent two `mcp-vw` instances from speaking on the same stdio channel
- * to the same VW Bridge. Claude Desktop on Windows MSIX has historically
+ * to the same VW Runtime API. Claude Desktop on Windows MSIX has historically
  * spawned duplicate MCP servers; this guard catches that.
  *
  * Pattern (knowledge-rag MCP servers, [04 §3.2]):

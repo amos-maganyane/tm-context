@@ -33,7 +33,7 @@ function makeHealthTool(bridge: BridgeClientLike): ToolDef {
   return {
     name: 'vw_health',
     description:
-      'Auth-exempt liveness check against the VW Bridge. Returns JSON {status, version}. ' +
+      'Auth-exempt liveness check against the VW Runtime API. Returns JSON {status, version}. ' +
       'Use as the FIRST tool call when diagnosing "is the bridge running at all?" — works even when the auth token has rotated.',
     inputSchema: emptyInput,
     handler: safeHandler(async (): Promise<ToolResult> => {
@@ -51,7 +51,7 @@ function makeVersionTool(bridge: BridgeClientLike): ToolDef {
   return {
     name: 'vw_version',
     description:
-      'Auth-exempt build metadata for the VW Bridge. Returns JSON {version, buildCommitSha, buildTimestamp, parcelMode}. ' +
+      'Auth-exempt build metadata for the VW Runtime API. Returns JSON {version, buildCommitSha, buildTimestamp, parcelMode}. ' +
       'Use to verify bridge compatibility (mcp-vw expects bridge >= 0.10.0) or to pin SDK behavior to a specific build.',
     inputSchema: emptyInput,
     handler: safeHandler(async (): Promise<ToolResult> => {

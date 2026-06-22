@@ -1,10 +1,10 @@
 {
   "manifest_version": "0.3",
   "name": "vw-bridge",
-  "display_name": "VW Bridge (VisualWorks 9.3.1 MCP)",
+  "display_name": "VW Runtime API (VisualWorks 9.3.1 MCP)",
   "version": "0.3.0",
-  "description": "Drive a VisualWorks 9.3.1 image through the VW Bridge HTTP API. Exposes 48 tools (18 MVP + 13 V2 + 17 V3) spanning liveness, code reading/navigation/description, NATIVE-TYPED scaffolders (class + windowSpec + ApplicationModel + dialog + parcel), method compile/define/delete, UI inspect/drive/dialogs/wait/screenshot, parcel load/unload/create, class introspection (fingerprint/hierarchy/export/search), and SUnit testing (run + describe failure).",
-  "long_description": "MCP server bridging Claude Desktop into a live VisualWorks 9.3.1 image via the VW Bridge HTTP endpoint at http://127.0.0.1:9876. Requires the VW Bridge to be running (Start-VWBridge.bat) and VW_BRIDGE_HOME env var set. Built for the MAS / Old Mutual Wealth WEALTH (storedev64.im) deployment but works against any VW Bridge instance.",
+  "description": "Drive a VisualWorks 9.3.1 image through the VW Runtime API HTTP API. Exposes 48 tools (18 MVP + 13 V2 + 17 V3) spanning liveness, code reading/navigation/description, NATIVE-TYPED scaffolders (class + windowSpec + ApplicationModel + dialog + parcel), method compile/define/delete, UI inspect/drive/dialogs/wait/screenshot, parcel load/unload/create, class introspection (fingerprint/hierarchy/export/search), and SUnit testing (run + describe failure).",
+  "long_description": "MCP server bridging Claude Desktop into a live VisualWorks 9.3.1 image via the VW Runtime API HTTP endpoint at http://127.0.0.1:9876. Requires the VW Runtime API to be running (Start-VWBridge.bat) and VW_RUNTIME_API_HOME env var set. Built for the MAS / Old Mutual Wealth WEALTH (storedev64.im) deployment but works against any VW Runtime API instance.",
   "author": {
     "name": "Amos Maganyane",
     "url": "https://github.com/amos-maganyane/tm-context"
@@ -30,8 +30,8 @@
       "command": "node",
       "args": ["${__dirname}/dist/src/index.js"],
       "env": {
-        "VW_BRIDGE_URL": "${user_config.bridge_url}",
-        "VW_BRIDGE_TOKEN_FILE": "${user_config.token_file}",
+        "VW_RUNTIME_API_URL": "${user_config.bridge_url}",
+        "VW_RUNTIME_API_TOKEN_FILE": "${user_config.token_file}",
         "MCP_VW_SINGLE_OWNER": "${user_config.single_owner}"
       }
     }
@@ -40,7 +40,7 @@
     "bridge_url": {
       "type": "string",
       "title": "Bridge URL",
-      "description": "URL where the VW Bridge HTTP listener is running. Default works for local single-developer setups.",
+      "description": "URL where the VW Runtime API HTTP listener is running. Default works for local single-developer setups.",
       "default": "http://127.0.0.1:9876",
       "required": true
     },

@@ -1,7 +1,7 @@
 {
   "name": "mcp-vw",
   "version": "0.1.0",
-  "description": "MCP server for VisualWorks 9.3.1 via the VW Bridge HTTP API. Exposes 18 MVP tools (liveness, eval with safety guards, code reading, code navigation, NATIVE-TYPED class creation, UI inspect/drive, parcel load/unload) for AI-driven native VW development.",
+  "description": "MCP server for VisualWorks 9.3.1 via the VW Runtime API HTTP API. Exposes 18 MVP tools (liveness, eval with safety guards, code reading, code navigation, NATIVE-TYPED class creation, UI inspect/drive, parcel load/unload) for AI-driven native VW development.",
   "type": "module",
   "main": "dist/src/index.js",
   "bin": {

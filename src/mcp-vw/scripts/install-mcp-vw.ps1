@@ -18,11 +18,11 @@
     parent directory (assumed: <repo>/src/mcp-vw/scripts/...).
 
 .PARAMETER BridgeUrl
-    URL of the VW Bridge. Defaults to http://127.0.0.1:9876.
+    URL of the VW Runtime API. Defaults to http://127.0.0.1:9876.
 
 .PARAMETER TokenFile
-    Path to the bridge .token file. Defaults to $env:VW_BRIDGE_HOME/.token
-    if VW_BRIDGE_HOME is set.
+    Path to the bridge .token file. Defaults to $env:VW_RUNTIME_API_HOME/.token
+    if VW_RUNTIME_API_HOME is set.
 
 .PARAMETER SingleOwner
     Whether to enforce single-owner lock. Defaults to true.
@@ -32,7 +32,7 @@
 
 .EXAMPLE
     .\install-mcp-vw.ps1
-        Install with defaults; auto-detect MSIX path; pick up VW_BRIDGE_HOME from env.
+        Install with defaults; auto-detect MSIX path; pick up VW_RUNTIME_API_HOME from env.
 
 .EXAMPLE
     .\install-mcp-vw.ps1 -BridgeUrl http://localhost:9876 -SingleOwner $false
@@ -73,17 +73,17 @@ Write-Host "[install-mcp-vw] mcp-vw entry: $entryPoint"
 # -----------------------------------------------------------------------------
 
 if (-not $TokenFile) {
-    $vwBridgeHome = $env:VW_BRIDGE_HOME
+    $vwBridgeHome = $env:VW_RUNTIME_API_HOME
     if (-not $vwBridgeHome) {
-        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'User')
+        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'User')
     }
     if (-not $vwBridgeHome) {
-        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'Machine')
+        $vwBridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'Machine')
     }
     if ($vwBridgeHome) {
         $TokenFile = Join-Path $vwBridgeHome '.token'
     } else {
-        throw "[install-mcp-vw] -TokenFile not provided and VW_BRIDGE_HOME env var is not set. Either pass -TokenFile or set VW_BRIDGE_HOME."
+        throw "[install-mcp-vw] -TokenFile not provided and VW_RUNTIME_API_HOME env var is not set. Either pass -TokenFile or set VW_RUNTIME_API_HOME."
     }
 }
 Write-Host "[install-mcp-vw] Token file: $TokenFile"
@@ -150,8 +150,8 @@ $entry = [pscustomobject]@{
     command = 'node'
     args    = @($entryPoint)
     env     = [pscustomobject]@{
-        VW_BRIDGE_URL        = $BridgeUrl
-        VW_BRIDGE_TOKEN_FILE = $TokenFile
+        VW_RUNTIME_API_URL        = $BridgeUrl
+        VW_RUNTIME_API_TOKEN_FILE = $TokenFile
         MCP_VW_SINGLE_OWNER  = if ($SingleOwner) { '1' } else { '0' }
     }
 }

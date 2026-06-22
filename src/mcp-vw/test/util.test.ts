@@ -39,7 +39,7 @@ describe('errorResult()', () => {
 
   it('preserves multi-line recovery-action messages', () => {
     const msg =
-      'VW Bridge is not responding at http://127.0.0.1:9876.\n' +
+      'VW Runtime API is not responding at http://127.0.0.1:9876.\n' +
       'Check that the VisualWorks image is running and the bridge is started.';
     expect(errorResult(msg)).toEqual({
       content: [{ type: 'text', text: msg }],

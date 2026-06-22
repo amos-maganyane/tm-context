@@ -11,7 +11,8 @@ USE CASES:
   - Hand-driven via /eval after manual loadParcelFrom: in a development image
   - Emergency Workspace paste post-loadParcelFrom: (cold-start exception fallback)
 
-ENVIRONMENT: VW_BRIDGE_HOME must be set (constraint #8).
+ENVIRONMENT: VW_RUNTIME_API_HOME must be set (constraint #8).
+v1.0.0: env var renamed from VW_BRIDGE_HOME to VW_RUNTIME_API_HOME.
 NOT chunk-formatted - do-it expression block intended for /eval POST or
 wrapper-generated chunk file-in.
 
@@ -22,10 +23,10 @@ does start + token-write."
 | home tokenPath tokenStream |
 
 home := OS.CEnvironment userEnvironment
-    at: 'VW_BRIDGE_HOME'
-    ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set. Set it to the bridge install dir (folder containing parcels/VWBridge.pcl).'].
+    at: 'VW_RUNTIME_API_HOME'
+    ifAbsent: [self error: 'VW_RUNTIME_API_HOME env var is not set. Set it to the runtime install dir (folder containing parcels/VWBridge.pcl).'].
 
-Transcript cr; show: '[parcel-start.st] VW_BRIDGE_HOME=' , home; cr.
+Transcript cr; show: '[parcel-start.st] VW_RUNTIME_API_HOME=' , home; cr.
 
 "Start bridge listener - internally calls stop first if already running."
 VWB.VWBridge start.

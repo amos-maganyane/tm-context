@@ -2,7 +2,7 @@
 
 [![tests](https://img.shields.io/badge/tests-290_passing-green)](#testing) [![node](https://img.shields.io/badge/node-%3E%3D20-blue)](#prerequisites) [![sdk](https://img.shields.io/badge/%40modelcontextprotocol%2Fsdk-%5E1.29-blue)](#runtime-stack) [![tools](https://img.shields.io/badge/tools-48_(18_MVP_+_13_V2_+_17_V3)-blue)](#tool-catalog-48-tools)
 
-MCP server that bridges **Claude Desktop** into a **live VisualWorks 9.3.1** image through the [VW Bridge](../vw-bridge/) HTTP endpoint. Exposes the **full 48-tool architecture.md v2 surface** (18 MVP + 13 V2 + 17 V3): liveness, code reading/navigation/introspection, NATIVE-TYPED scaffolders (class + windowSpec + ApplicationModel + dialog + parcel), method compile/define/delete, UI inspect/drive/dialogs/wait/screenshot, parcel load/unload/create, class hierarchy + fingerprint + search, and SUnit testing. Built for the MAS / Old Mutual Wealth WEALTH (`storedev64.im`) deployment but works against any VW Bridge instance.
+MCP server that bridges **Claude Desktop** into a **live VisualWorks 9.3.1** image through the [VW Runtime API](../vw-bridge/) HTTP endpoint. Exposes the **full 48-tool architecture.md v2 surface** (18 MVP + 13 V2 + 17 V3): liveness, code reading/navigation/introspection, NATIVE-TYPED scaffolders (class + windowSpec + ApplicationModel + dialog + parcel), method compile/define/delete, UI inspect/drive/dialogs/wait/screenshot, parcel load/unload/create, class hierarchy + fingerprint + search, and SUnit testing. Built for the MAS / Old Mutual Wealth WEALTH (`storedev64.im`) deployment but works against any VW Runtime API instance.
 
 ## Quick start
 
@@ -23,7 +23,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-mcp-vw.p
 
 ## What it does
 
-Without `mcp-vw`, Claude Desktop can only issue raw HTTP probes against the VW Bridge through `curl`-style tool calls. The AI has to hand-write Smalltalk for everything: navigating namespaces, reading class definitions, building class shapes, walking spec literals — and it loses to all 42 [carry-forward image quirks](../../knowledge/vw-image-api-contract.md).
+Without `mcp-vw`, Claude Desktop can only issue raw HTTP probes against the VW Runtime API through `curl`-style tool calls. The AI has to hand-write Smalltalk for everything: navigating namespaces, reading class definitions, building class shapes, walking spec literals — and it loses to all 42 [carry-forward image quirks](../../knowledge/vw-image-api-contract.md).
 
 `mcp-vw` is the abstraction layer. The 18 tools encapsulate:
 
@@ -203,14 +203,14 @@ All tools are prefixed `vw_` to disambiguate from Jasper (the GemStone MCP) whic
 ## Prerequisites
 
 - **Node.js ≥ 20** (uses native `fetch` + `AbortSignal.timeout`).
-- **VW Bridge** running at `http://127.0.0.1:9876` (verify via `curl.exe -s http://127.0.0.1:9876/health`).
-- **`VW_BRIDGE_HOME`** env var set at the User scope, pointing at `<repo>/src/vw-bridge/`. Persists across vwnt.exe restarts.
+- **VW Runtime API** running at `http://127.0.0.1:9876` (verify via `curl.exe -s http://127.0.0.1:9876/health`).
+- **`VW_RUNTIME_API_HOME`** env var set at the User scope, pointing at `<repo>/src/vw-bridge/`. Persists across vwnt.exe restarts.
 
 If the bridge isn't running, start it:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
-  -File "$env:VW_BRIDGE_HOME\scripts\Start-VWBridge.ps1" -KillExisting
+  -File "$env:VW_RUNTIME_API_HOME\scripts\Start-VWBridge.ps1" -KillExisting
 ```
 
 ## Install
@@ -259,8 +259,8 @@ Add `vw-bridge` to `mcpServers`:
       "command": "node",
       "args": ["C:\\Users\\YOU\\tm\\tm-context\\src\\mcp-vw\\dist\\src\\index.js"],
       "env": {
-        "VW_BRIDGE_URL": "http://127.0.0.1:9876",
-        "VW_BRIDGE_TOKEN_FILE": "C:\\Users\\YOU\\tm\\tm-context\\src\\vw-bridge\\.token",
+        "VW_RUNTIME_API_URL": "http://127.0.0.1:9876",
+        "VW_RUNTIME_API_TOKEN_FILE": "C:\\Users\\YOU\\tm\\tm-context\\src\\vw-bridge\\.token",
         "MCP_VW_SINGLE_OWNER": "1"
       }
     }
@@ -276,8 +276,8 @@ All config is via env vars (mcp-vw reads them at startup):
 
 | Var | Default | Description |
 |---|---|---|
-| `VW_BRIDGE_URL` | `http://127.0.0.1:9876` | Bridge HTTP endpoint. Trailing slash is stripped. |
-| `VW_BRIDGE_TOKEN_FILE` | `$VW_BRIDGE_HOME/.token` if set, else `~/.vw-bridge.token` | Path to the bridge's `.token` file. mcp-vw re-reads on every call. |
+| `VW_RUNTIME_API_URL` | `http://127.0.0.1:9876` | Bridge HTTP endpoint. Trailing slash is stripped. |
+| `VW_RUNTIME_API_TOKEN_FILE` | `$VW_RUNTIME_API_HOME/.token` if set, else `~/.vw-bridge.token` | Path to the bridge's `.token` file. mcp-vw re-reads on every call. |
 | `MCP_VW_SINGLE_OWNER` | enabled | Single-owner lock. Disable with `0` / `false` / `off` for parallel dev. |
 | `MCP_VW_LOCK_FILE` | `<tmpdir>/mcp-vw.lock` | Lockfile path. Use a non-default if multiple bridges share a host. |
 
@@ -358,15 +358,15 @@ Every behavior change ships through red→green→refactor. Tests live in `test/
 
 ## Troubleshooting
 
-### "VW Bridge is not responding (ECONNREFUSED)"
+### "VW Runtime API is not responding (ECONNREFUSED)"
 
 The bridge isn't running. Start it:
 
 ```powershell
-& "$env:VW_BRIDGE_HOME\scripts\Start-VWBridge.ps1" -KillExisting
+& "$env:VW_RUNTIME_API_HOME\scripts\Start-VWBridge.ps1" -KillExisting
 ```
 
-### "VW Bridge rejected the auth token (HTTP 401)"
+### "VW Runtime API rejected the auth token (HTTP 401)"
 
 The bridge rotated its token since you last cached it. `mcp-vw` re-reads + retries automatically — if you're still hitting 401 after the retry, the `.token` file is stale. Either restart the bridge or wait for the next launch (token rotates on every `VWB.VWBridge start`).
 

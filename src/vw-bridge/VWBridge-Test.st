@@ -184,7 +184,7 @@ testBug2DialogConfirmNoReturnsFalse
 !VWB.VWBridgeTest methodsFor: 'tests - logging'!
 
 testLogWritesNDJSONToFile
-	"v0.8.13: bridge log: writes a JSON-line to vw-bridge.log containing
+	"v0.8.13: bridge log: writes a JSON-line to vw-runtime-api.log containing
 	 ts, level, and msg fields. Marker uniqueness via millisecondClockValue
 	 ensures we find OUR write, not some pre-existing line."
 	| marker contents |
@@ -313,8 +313,8 @@ testPurgeWedgedDialogProcessesUnwedgesActiveModalFork
 
 testVwBridgeHomeOverrideTakesPriority
 	"v0.9.2 Phase P P1: vwBridgeHomeOverride: takes priority over the
-	 VW_BRIDGE_HOME env var. Cleared in ensure: block to keep the test
-	 hermetic from the next test."
+	 VW_RUNTIME_API_HOME env var. Cleared in ensure: block to keep the test
+	 hermetic from the next test. v1.0.0: env var renamed from VW_BRIDGE_HOME."
 	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\override-wins'.
 	 self assert: VWB.VWBridge vwBridgeHome = 'C:\test\override-wins'
 		description: 'vwBridgeHome should return override when set']
@@ -345,13 +345,13 @@ testTokenFilePathDerivesFromVwBridgeHome
 		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 
 testLogFilePathDerivesFromVwBridgeHome
-	"v0.9.2 Phase P P1: logFilePath returns vwBridgeHome with vw-bridge.log
+	"v0.9.2 Phase P P1: logFilePath returns vwBridgeHome with vw-runtime-api.log
 	 appended via backslash. Both class-side and instance-side return the
 	 same path, confirming instance delegation works."
 	[VWB.VWBridge vwBridgeHomeOverride: 'C:\test\install'.
-	 self assert: VWB.VWBridge logFilePath = 'C:\test\install\vw-bridge.log'
-		description: 'class-side logFilePath should be vwBridgeHome , backslash , vw-bridge.log'.
-	 self assert: VWB.VWBridge singleton logFilePath = 'C:\test\install\vw-bridge.log'
+	 self assert: VWB.VWBridge logFilePath = 'C:\test\install\vw-runtime-api.log'
+		description: 'class-side logFilePath should be vwBridgeHome , backslash , vw-runtime-api.log'.
+	 self assert: VWB.VWBridge singleton logFilePath = 'C:\test\install\vw-runtime-api.log'
 		description: 'instance-side logFilePath should delegate to class-side']
 		ensure: [VWB.VWBridge clearVwBridgeHomeOverride]!
 

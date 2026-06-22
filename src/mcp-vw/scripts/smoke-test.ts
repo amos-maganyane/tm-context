@@ -1,5 +1,5 @@
 /**
- * smoke-test.ts — end-to-end smoke test against the LIVE VW Bridge.
+ * smoke-test.ts — end-to-end smoke test against the LIVE VW Runtime API.
  *
  * Spawns `dist/src/index.js` as an MCP subprocess via StdioClientTransport,
  * issues real tools/list + tools/call requests, and verifies the responses
@@ -10,8 +10,8 @@
  *
  * Assumes:
  *   - npm run build has already run (dist/ exists)
- *   - VW Bridge is running at http://127.0.0.1:9876 (verify with /health)
- *   - VW_BRIDGE_HOME env var is set
+ *   - VW Runtime API is running at http://127.0.0.1:9876 (verify with /health)
+ *   - VW_RUNTIME_API_HOME env var is set
  *
  * Exits 0 on success, 1 on any failure. Each step prints PASS/FAIL.
  */
@@ -30,11 +30,11 @@ const __dirname = dirname(__filename);
 const projectRoot = resolve(__dirname, '..');
 const entryPoint = resolve(projectRoot, 'dist', 'src', 'index.js');
 
-const BRIDGE_URL = process.env['VW_BRIDGE_URL'] ?? 'http://127.0.0.1:9876';
-const VW_BRIDGE_HOME = process.env['VW_BRIDGE_HOME'];
+const BRIDGE_URL = process.env['VW_RUNTIME_API_URL'] ?? 'http://127.0.0.1:9876';
+const VW_RUNTIME_API_HOME = process.env['VW_RUNTIME_API_HOME'];
 const TOKEN_FILE =
-  process.env['VW_BRIDGE_TOKEN_FILE'] ??
-  (VW_BRIDGE_HOME ? join(VW_BRIDGE_HOME, '.token') : undefined);
+  process.env['VW_RUNTIME_API_TOKEN_FILE'] ??
+  (VW_RUNTIME_API_HOME ? join(VW_RUNTIME_API_HOME, '.token') : undefined);
 
 interface TestStep {
   name: string;
@@ -77,7 +77,7 @@ async function preflightBridge(): Promise<void> {
   if (!res.ok) {
     throw new Error(
       `Bridge /health returned HTTP ${res.status}. Start the bridge first: ` +
-        `powershell.exe -File $env:VW_BRIDGE_HOME\\scripts\\Start-VWBridge.ps1 -KillExisting`
+        `powershell.exe -File $env:VW_RUNTIME_API_HOME\\scripts\\Start-VWBridge.ps1 -KillExisting`
     );
   }
   const body = (await res.json()) as { status?: string; version?: string };
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   }
   if (!TOKEN_FILE || !existsSync(TOKEN_FILE)) {
     console.error(
-      `FATAL: token file not found at ${TOKEN_FILE}. Set VW_BRIDGE_TOKEN_FILE or VW_BRIDGE_HOME.`
+      `FATAL: token file not found at ${TOKEN_FILE}. Set VW_RUNTIME_API_TOKEN_FILE or VW_RUNTIME_API_HOME.`
     );
     process.exit(1);
   }
@@ -123,8 +123,8 @@ async function main(): Promise<void> {
     args: [entryPoint],
     env: {
       ...process.env,
-      VW_BRIDGE_URL: BRIDGE_URL,
-      VW_BRIDGE_TOKEN_FILE: TOKEN_FILE,
+      VW_RUNTIME_API_URL: BRIDGE_URL,
+      VW_RUNTIME_API_TOKEN_FILE: TOKEN_FILE,
       MCP_VW_LOCK_FILE: lockFile,
       // Don't conflict with a real Claude Desktop instance.
       MCP_VW_SINGLE_OWNER: '0',

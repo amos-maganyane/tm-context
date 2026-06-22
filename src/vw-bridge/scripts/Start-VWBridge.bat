@@ -1,5 +1,5 @@
 @echo off
-REM Start-VWBridge.bat - Desktop-friendly launcher for VW Bridge (Phase P P5)
+REM Start-VWBridge.bat - Desktop-friendly launcher for VW Runtime API (Phase P P5)
 REM
 REM Wraps Start-VWBridge.ps1 with a PowerShell invocation that bypasses the
 REM execution-policy restriction without modifying machine policy. Forwards

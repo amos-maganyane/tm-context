@@ -30,7 +30,7 @@
     Exit codes:
       0 success
       1 bridge not responding at /health
-      2 VW_BRIDGE_HOME env var missing
+      2 VW_RUNTIME_API_HOME env var missing
       3 /eval build returned non-success
       4 expected output artifacts missing
       5 copy to shipping location failed
@@ -91,18 +91,18 @@ function Get-GitHeadSha([string]$startPath) {
 
 #region --- (1) preflight ---
 
-$bridgeHome = $env:VW_BRIDGE_HOME
+$bridgeHome = $env:VW_RUNTIME_API_HOME
 if (-not $bridgeHome) {
-    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'User')
+    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'User')
 }
 if (-not $bridgeHome) {
-    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'Machine')
+    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'Machine')
 }
 if (-not $bridgeHome) {
-    Write-Bad "VW_BRIDGE_HOME not set at Process/User/Machine scope"
+    Write-Bad "VW_RUNTIME_API_HOME not set at Process/User/Machine scope"
     exit 2
 }
-$env:VW_BRIDGE_HOME = $bridgeHome
+$env:VW_RUNTIME_API_HOME = $bridgeHome
 
 $tokenFile = Join-Path $bridgeHome '.token'
 if (-not (Test-Path -LiteralPath $tokenFile)) {
@@ -116,7 +116,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Bad "/health did not respond - launch via Start-VWBridge.bat first."
     exit 1
 }
-Write-Section "preflight OK (VW_BRIDGE_HOME=$bridgeHome)"
+Write-Section "preflight OK (VW_RUNTIME_API_HOME=$bridgeHome)"
 Write-Section "bridge: $health"
 
 #endregion
@@ -169,7 +169,7 @@ foreach ($f in @($generatedPcl, $generatedPst)) {
 # every cold-start in both FileIn and Parcel modes.
 $probeBody = @'
 | home parcelDir pclPath pstPath patchInstalled cursorOldMethod parcel |
-home := OS.CEnvironment userEnvironment at: 'VW_BRIDGE_HOME'.
+home := OS.CEnvironment userEnvironment at: 'VW_RUNTIME_API_HOME'.
 parcelDir := home , '\.generated\parcels'.
 pclPath := parcelDir , '\VWBridge.pcl'.
 pstPath := parcelDir , '\VWBridge.pst'.

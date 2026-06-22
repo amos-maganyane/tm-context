@@ -12,7 +12,7 @@
      this expression into the image.
 
  BEHAVIOR:
-   1. Resolve VW_BRIDGE_HOME from OS env var (fails loud per constraint #8)
+   1. Resolve VW_RUNTIME_API_HOME from OS env var (fails loud per constraint #8)
    2. Defensively stop+remove any leaked top-level Root.Smalltalk.VWBridge
    3. File-in 5 source files in dependency order
    4. Start the bridge (rotates token)
@@ -28,13 +28,14 @@
 
 | home homeFilename tokenPath tokenStream srcFile oldVwBridge |
 
-"(1) Resolve install root - fails loud per constraint #8"
+"(1) Resolve install root - fails loud per constraint #8.
+ v1.0.0: env var renamed from VW_BRIDGE_HOME to VW_RUNTIME_API_HOME."
 home := OS.CEnvironment userEnvironment
-    at: 'VW_BRIDGE_HOME'
-    ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set. Set it to the bridge install directory (the folder containing VWBridge.st), e.g. C:\path\to\src\vw-bridge. See INSTALL.md (Phase P P7).'].
+    at: 'VW_RUNTIME_API_HOME'
+    ifAbsent: [self error: 'VW_RUNTIME_API_HOME env var is not set. Set it to the runtime install directory (the folder containing VWBridge.st), e.g. C:\path\to\src\vw-bridge. See INSTALL.md (Phase P P7).'].
 homeFilename := home asFilename.
 
-Transcript cr; show: '[load.st] VW_BRIDGE_HOME=', home; cr.
+Transcript cr; show: '[load.st] VW_RUNTIME_API_HOME=', home; cr.
 
 "(2) Defensive Stage 2 migration cleanup - removes top-level Root.Smalltalk.VWBridge
  if it leaked back (idempotent; no-op if absent or already migrated)"

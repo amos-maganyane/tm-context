@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Auto-start wrapper for the VW Bridge (Phase P P5 + P6).
+    Auto-start wrapper for the VW Runtime API (Phase P P5 + P6).
 
 .DESCRIPTION
     Launches vwnt.exe with the MAS storedev64.im image and uses documented
@@ -35,7 +35,7 @@
 
 .PARAMETER Parcel
     Path to the .pcl file (Parcel mode only). Defaults to
-    $VW_BRIDGE_HOME/parcels/VWBridge.pcl.
+    $VW_RUNTIME_API_HOME/parcels/VWBridge.pcl.
 
 .PARAMETER HealthPollTimeoutSec
     How long to wait for /health to respond 200 after launch. Default 90s -
@@ -71,7 +71,7 @@
 .NOTES
     Exit codes:
       0 success (or bridge already up)
-      2 VW_BRIDGE_HOME env var missing
+      2 VW_RUNTIME_API_HOME env var missing
       3 required file missing (vwnt.exe / image / source script / parcel)
       4 source script contains '!' character (would break chunk-wrap)
       5 /health did not respond within timeout
@@ -148,29 +148,29 @@ function Get-GitHeadSha([string]$startPath) {
 
 #region --- (1) preflight ---
 
-# VW_BRIDGE_HOME resolution order: Process env, User env, Machine env.
-# Process env covers explicit `$env:VW_BRIDGE_HOME = '...'` before launch.
+# VW_RUNTIME_API_HOME resolution order: Process env, User env, Machine env.
+# Process env covers explicit `$env:VW_RUNTIME_API_HOME = '...'` before launch.
 # User/Machine env cover desktop-shortcut + fresh-terminal launches where the
 # parent process doesn't have the var. vwnt.exe itself reads via
 # OS.CEnvironment userEnvironment (live OS-level read, per api-contract #8)
-# so a Machine-level VW_BRIDGE_HOME would be visible inside the image even
+# so a Machine-level VW_RUNTIME_API_HOME would be visible inside the image even
 # if not inherited via process env - but the wrapper needs it for .token /
 # .generated / .err path derivation, so we resolve explicitly here.
-$bridgeHome = $env:VW_BRIDGE_HOME
+$bridgeHome = $env:VW_RUNTIME_API_HOME
 if (-not $bridgeHome) {
-    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'User')
+    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'User')
 }
 if (-not $bridgeHome) {
-    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_BRIDGE_HOME', 'Machine')
+    $bridgeHome = [Environment]::GetEnvironmentVariable('VW_RUNTIME_API_HOME', 'Machine')
 }
 if (-not $bridgeHome) {
-    Write-Bad "VW_BRIDGE_HOME environment variable is not set at Process, User, or Machine level."
+    Write-Bad "VW_RUNTIME_API_HOME environment variable is not set at Process, User, or Machine level."
     Write-Bad "Set it to the bridge install dir (folder containing load.st), e.g.:"
-    Write-Bad "  [Environment]::SetEnvironmentVariable('VW_BRIDGE_HOME', 'C:\path\to\src\vw-bridge', 'User')"
+    Write-Bad "  [Environment]::SetEnvironmentVariable('VW_RUNTIME_API_HOME', 'C:\path\to\src\vw-bridge', 'User')"
     exit 2
 }
 # Propagate to process env so any child (vwnt.exe, curl.exe) inherits it.
-$env:VW_BRIDGE_HOME = $bridgeHome
+$env:VW_RUNTIME_API_HOME = $bridgeHome
 
 $vwnt     = 'C:\visualworks931\bin\win64\vwnt.exe'
 $image    = 'C:\visualworks931\image\storedev64.im'
@@ -200,7 +200,7 @@ foreach ($path in $requiredFiles) {
         exit 3
     }
 }
-Write-Section "preflight OK (VW_BRIDGE_HOME=$bridgeHome, Mode=$Mode)"
+Write-Section "preflight OK (VW_RUNTIME_API_HOME=$bridgeHome, Mode=$Mode)"
 if ($Mode -eq 'Parcel') { Write-Section "  parcel: $parcelPath" }
 
 # --- (1b) assert source script has no '!' (would break the chunk-wrap) ---
