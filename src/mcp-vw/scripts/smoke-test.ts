@@ -429,6 +429,361 @@ async function main(): Promise<void> {
         assert(typeof firstText(result) === 'string');
       }
     });
+
+    // ---------------------------------------------------------------------
+    // HAPPY-PATH SMOKE TESTS (s23 benchmark Bug 5 fix).
+    //
+    // The original 16 tests only validated GUARDS (refuses VWB.*, refuses
+    // missing confirm), never that successful class creation / compile /
+    // windowSpec installation actually works end-to-end. This shipped Bugs
+    // 1 + 6 to "16/16 PASS" until the first real benchmark exposed them.
+    //
+    // Each test below uses a unique timestamp + random-hex suffix in the
+    // class name to avoid collisions with concurrent smoke runs, and
+    // cleans up via vw_delete_class { confirm: true } when done.
+    // ---------------------------------------------------------------------
+
+    const smokeTag = `${Date.now()}_${randomBytes(3).toString('hex')}`;
+
+    // -------------------------------------------------------------------
+    // 17. [10a] vw_create_class creates a real class in Smalltalk namespace
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_class creates Smalltalk.SmokeTestCreate_${smokeTag}`,
+      async () => {
+        const cls = `SmokeTestCreate_${smokeTag}`;
+        const createResult = await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+            instanceVariableNames: ['foo', 'bar'],
+            category: 'Smoke-Bug5',
+          },
+        });
+        assert(
+          !createResult.isError,
+          `vw_create_class failed: ${firstText(createResult)}`
+        );
+        // Verify the class actually exists in the image.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `(Smalltalk at: #${cls} ifAbsent: [nil]) notNil printString`,
+          },
+        });
+        assert(!verify.isError, `eval verify failed: ${firstText(verify)}`);
+        assert(
+          firstText(verify).includes('true'),
+          `class should exist; eval returned: ${firstText(verify)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 18. [10b] vw_create_class re-creation with same name+shape is
+    // idempotent (VW's defineClass: allows same-shape redefinition).
+    // (Handoff's "refuses re-creation" would require a tool behavior
+    // change — deferred to a future bug.)
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_class idempotent re-creation SmokeTestReCreate_${smokeTag}`,
+      async () => {
+        const cls = `SmokeTestReCreate_${smokeTag}`;
+        const args = {
+          className: cls,
+          namespace: 'Smalltalk',
+          superclass: 'Object',
+          instanceVariableNames: ['x'],
+          category: 'Smoke-Bug5',
+        };
+        const r1 = await client.callTool({ name: 'vw_create_class', arguments: args });
+        assert(!r1.isError, `first create failed: ${firstText(r1)}`);
+        const r2 = await client.callTool({ name: 'vw_create_class', arguments: args });
+        assert(
+          !r2.isError,
+          `re-create with same shape should succeed (VW idempotent): ${firstText(r2)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 19. [10c] vw_delete_class with confirm:true removes a class
+    // -------------------------------------------------------------------
+    await step(
+      `vw_delete_class with confirm:true removes SmokeTestDelete_${smokeTag}`,
+      async () => {
+        const cls = `SmokeTestDelete_${smokeTag}`;
+        // Setup.
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+          },
+        });
+        const exists = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `(Smalltalk at: #${cls} ifAbsent: [nil]) notNil printString`,
+          },
+        });
+        assert(
+          firstText(exists).includes('true'),
+          `class should exist after create; got: ${firstText(exists)}`
+        );
+        // Delete.
+        const deleteResult = await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+        assert(
+          !deleteResult.isError,
+          `delete failed: ${firstText(deleteResult)}`
+        );
+        // Verify removed.
+        const removed = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `(Smalltalk at: #${cls} ifAbsent: [nil]) isNil printString`,
+          },
+        });
+        assert(
+          firstText(removed).includes('true'),
+          `class should be removed after delete; got: ${firstText(removed)}`
+        );
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 20. [13a] vw_compile_method adds a method returning 42, verifiable
+    // via vw_eval against a fresh instance.
+    // -------------------------------------------------------------------
+    await step(
+      `vw_compile_method adds SmokeTestCompile_${smokeTag}>>foo returning 42`,
+      async () => {
+        const cls = `SmokeTestCompile_${smokeTag}`;
+        // Setup target class.
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+          },
+        });
+        // Compile foo ^42.
+        const compileResult = await client.callTool({
+          name: 'vw_compile_method',
+          arguments: {
+            className: cls,
+            category: 'smoke',
+            source: 'foo\n    ^42',
+          },
+        });
+        assert(
+          !compileResult.isError,
+          `compile failed: ${firstText(compileResult)}`
+        );
+        // Verify behavior: instance new foo returns 42.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: { source: `${cls} new foo printString` },
+        });
+        assert(!verify.isError, `eval failed: ${firstText(verify)}`);
+        assert(
+          firstText(verify).includes('42'),
+          `expected 42, got: ${firstText(verify)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 21. [13b] vw_compile_method surfaces invalid Smalltalk source as
+    // isError (using an unterminated string literal as the bad input).
+    // -------------------------------------------------------------------
+    await step(
+      `vw_compile_method refuses invalid Smalltalk source`,
+      async () => {
+        const cls = `SmokeTestInvalid_${smokeTag}`;
+        // Setup target class.
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+          },
+        });
+        // Unterminated string literal is unambiguously a syntax error.
+        const compileResult = await client.callTool({
+          name: 'vw_compile_method',
+          arguments: {
+            className: cls,
+            category: 'smoke',
+            source: "foo\n    ^'unterminated",
+          },
+        });
+        assert(
+          compileResult.isError === true,
+          `expected isError:true for invalid syntax, got: ${JSON.stringify(compileResult)}`
+        );
+        // Cleanup target class regardless of whether anything was installed.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 22. [10d] vw_create_application_model end-to-end: class + action +
+    // windowSpec with 1 Label + 1 ActionButton.
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_application_model SmokeTestAppModel_${smokeTag} with Label + ActionButton`,
+      async () => {
+        const cls = `SmokeTestAppModel_${smokeTag}`;
+        const createResult = await client.callTool({
+          name: 'vw_create_application_model',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'ApplicationModel',
+            category: 'Smoke-Bug5',
+            actions: [
+              { name: 'doNothing', body: '"smoke test action"' },
+            ],
+            windowSpec: {
+              window: {
+                label: 'Smoke Test',
+                bounds: [100, 100, 400, 200],
+              },
+              components: [
+                {
+                  type: 'Label',
+                  name: 'lbl',
+                  label: 'Hi!',
+                  layout: { l: 10, lf: 0, t: 10, tf: 0, r: -10, rf: 1, b: 30, bf: 0 },
+                },
+                {
+                  type: 'ActionButton',
+                  name: 'btn',
+                  label: 'OK',
+                  model: 'doNothing',
+                  layout: { l: 10, lf: 0, t: 50, tf: 0, r: -10, rf: 1, b: 80, bf: 0 },
+                },
+              ],
+            },
+          },
+        });
+        assert(
+          !createResult.isError,
+          `vw_create_application_model failed: ${firstText(createResult)}`
+        );
+        // Verify the class + windowSpec selector exist.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `((Smalltalk at: #${cls} ifAbsent: [nil]) notNil and: [(${cls} class includesSelector: #windowSpec)]) printString`,
+          },
+        });
+        assert(
+          firstText(verify).includes('true'),
+          `class + windowSpec should be present; got: ${firstText(verify)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 23. [10e] vw_create_window_spec for DataSet with 2 columns
+    // (s23 Bug 6 fix verified end-to-end). Target class must exist first.
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_window_spec adds DataSet windowSpec to SmokeTestDataSet_${smokeTag}`,
+      async () => {
+        const cls = `SmokeTestDataSet_${smokeTag}`;
+        // Setup target class.
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+          },
+        });
+        // Install windowSpec with a 2-column DataSet.
+        const result = await client.callTool({
+          name: 'vw_create_window_spec',
+          arguments: {
+            className: cls,
+            window: {
+              label: 'DataSet Smoke',
+              bounds: [100, 100, 500, 300],
+            },
+            components: [
+              {
+                type: 'DataSet',
+                name: 'table',
+                model: 'rows',
+                columns: [
+                  { label: 'A', width: 100, readSelector: 'fieldA' },
+                  {
+                    label: 'B',
+                    width: 100,
+                    readSelector: 'fieldB',
+                    printSelector: 'printString',
+                  },
+                ],
+                layout: { l: 10, lf: 0, t: 10, tf: 0, r: -10, rf: 1, b: -10, bf: 1 },
+              },
+            ],
+          },
+        });
+        assert(
+          !result.isError,
+          `vw_create_window_spec failed: ${firstText(result)}`
+        );
+        // Verify the windowSpec selector was installed on the class side.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `(${cls} class includesSelector: #windowSpec) printString`,
+          },
+        });
+        assert(
+          firstText(verify).includes('true'),
+          `${cls} class>>windowSpec should exist; got: ${firstText(verify)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
   } finally {
     try {
       await client.close();
