@@ -6,3 +6,6 @@ src/vw-bridge/.dialog-probe*.txt
 src/vw-bridge/vw-bridge.log
 src/vw-bridge/.generated/
 src/vw-bridge/vwbridge-autostart.err
+
+# Study material clones (kept local-only)
+references/
