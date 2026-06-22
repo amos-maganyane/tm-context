@@ -27,7 +27,7 @@ If a selector you assume exists isn't listed here, **probe before using it.** Pr
 | VW version | 9.3.1 (64-bit on Windows) |
 | MAS version | `!MAS NR V436.47` (from `version.topaz`) |
 | Bridge endpoint | `http://127.0.0.1:9876` (when running; v0.8.13 as of session-9) |
-| Bridge token | rotates every `VWBridge start`; read from `src/vw-bridge/.token` |
+| Bridge token | rotates every `VWBridge start`; read from `%LOCALAPPDATA%\Enviro365\vw-runtime-api\token` |
 
 ---
 
@@ -345,8 +345,8 @@ The standard VW class `OS.OperatingSystem` is ABSENT in this image. OS env-var a
 ```smalltalk
 | home |
 home := OS.CEnvironment userEnvironment
-    at: 'VW_BRIDGE_HOME'
-    ifAbsent: [self error: 'VW_BRIDGE_HOME not set'].
+    at: 'VW_RUNTIME_API_HOME'
+    ifAbsent: [self error: 'VW_RUNTIME_API_HOME not set'].
 ```
 
 - `OS.CEnvironment userEnvironment` returns the live OS env as a `CEnvironment` instance.
@@ -356,7 +356,7 @@ home := OS.CEnvironment userEnvironment
 ### Shortcut read (GOTCHA: returns empty string on missing)
 
 ```smalltalk
-OS.CEnvironment getenv: 'VW_BRIDGE_HOME'                 "returns '' if not set, NOT nil"
+OS.CEnvironment getenv: 'VW_RUNTIME_API_HOME'                 "returns '' if not set, NOT nil"
 OS.CEnvironment caseInsensitiveGetenv: 'userprofile'     "case-insensitive variant"
 ```
 
@@ -366,10 +366,10 @@ OS.CEnvironment caseInsensitiveGetenv: 'userprofile'     "case-insensitive varia
 
 ```smalltalk
 "Set:"
-OS.CEnvironment userEnvironmentAt: 'VW_BRIDGE_HOME' put: 'C:\test\value'.
+OS.CEnvironment userEnvironmentAt: 'VW_RUNTIME_API_HOME' put: 'C:\test\value'.
 
 "Remove:"
-OS.CEnvironment userEnvironment removeKey: 'VW_BRIDGE_HOME' ifAbsent: [nil].
+OS.CEnvironment userEnvironment removeKey: 'VW_RUNTIME_API_HOME' ifAbsent: [nil].
 ```
 
 - Mutations are visible to BOTH `getenv:` and `userEnvironment at:` reads (consistent).
@@ -394,8 +394,8 @@ All three return Smalltalk namespaces (compile-time symbol scopes), not OS envir
 vwBridgeHome
     vwBridgeHomeOverride isNil ifFalse: [^vwBridgeHomeOverride].
     ^OS.CEnvironment userEnvironment
-        at: 'VW_BRIDGE_HOME'
-        ifAbsent: [self error: 'VW_BRIDGE_HOME env var is not set...']
+        at: 'VW_RUNTIME_API_HOME'
+        ifAbsent: [self error: 'VW_RUNTIME_API_HOME env var is not set...']
 ```
 
 Tests inject via `VWB.VWBridge vwBridgeHomeOverride: 'C:\test\path'` and clear via `VWB.VWBridge clearVwBridgeHomeOverride` inside `ensure:` blocks. No OS env mutation in test setUp/tearDown — keeps the suite hermetic from process-wide env state.
@@ -404,7 +404,7 @@ Tests inject via `VWB.VWBridge vwBridgeHomeOverride: 'C:\test\path'` and clear v
 
 This image's VW emits `CEnvironment class>>#userEnvironment is deprecated. To set an environment variable use OSSystemSupport>>#setVariable:value: (or #getVariable: to read an environment variable).` on every call. The warning fires 4× during VWB.VWBridge startup (logFilePath, tokenFilePath, etc.). Functional but noisy.
 
-Future cleanup: switch reads to `OSSystemSupport getVariable: 'VW_BRIDGE_HOME'` and writes to `OSSystemSupport setVariable:value:`. Probe semantics first (missing-key behavior may differ from `CEnvironment userEnvironment at:ifAbsent:`).
+Future cleanup: switch reads to `OSSystemSupport getVariable: 'VW_RUNTIME_API_HOME'` and writes to `OSSystemSupport setVariable:value:`. Probe semantics first (missing-key behavior may differ from `CEnvironment userEnvironment at:ifAbsent:`).
 
 ---
 
@@ -536,14 +536,14 @@ The pre-flight is cheap (~1 sec) and saves the human a paste-error round-trip.
 
 Do-it expression block (NOT chunk-formatted) for `/eval` POST or VW Workspace Do It. Behavior:
 
-1. Resolves `VW_BRIDGE_HOME` from OS env via `OS.CEnvironment userEnvironment at:ifAbsent:` — fails loud per constraint #8.
+1. Resolves `VW_RUNTIME_API_HOME` from OS env via `OS.CEnvironment userEnvironment at:ifAbsent:` — fails loud per constraint #8.
 2. Defensively stops + removes any leaked top-level `Root.Smalltalk.VWBridge` (Stage 2 migration vestige cleanup).
 3. Files in 5 source files in dependency order:
    - `VWBridge.st` (Core — defines VWB namespace + VWBridge class)
    - `VWBridge-Patches.st` (SimpleDialog override — Bug #2 fix)
    - `VWBridge-Test.st`, `VWBridge-WaitTest.st`, `VWBridge-ScreenshotTest.st`
 4. Calls `VWB.VWBridge start` (rotates token, creates listener process).
-5. Writes new `.token` to `VWB.VWBridge tokenFilePath` (derived from `VW_BRIDGE_HOME`) for agent pickup.
+5. Writes new `token` to `VWB.VWBridge tokenFilePath` (derived from `tokenStateDir` at %LOCALAPPDATA%\Enviro365\vw-runtime-api per v1.0.0) for agent pickup.
 
 `fileIn` raises `EndOfStreamNotification` at EOF (constraint #24) — `load.st` leaves the `fileIn` UNWRAPPED so the notification auto-resumes at the top-level handler.
 
@@ -553,7 +553,7 @@ Do-it expression block. Inverse of `load.st` — removes ALL VWBridge footprint 
 
 1. Captures `tokenPath` BEFORE the class is gone (defensive: any error → nil).
 2. Stops bridge listener via dynamic `Smalltalk at: #VWB` lookup.
-3. Deletes `.token` file.
+3. Deletes `token` file.
 4. Removes `SimpleDialog>>choose:labels:values:default:for:` override (`removeSelector:` is naturally defensive on absent — verified session-17 probe).
 5. Removes 4 VWB classes in reverse-dependency order: `VWBridgeScreenshotTest`, `VWBridgeWaitTest`, `VWBridgeTest`, `VWBridge`.
 6. Removes empty VWB namespace (only if `keys isEmpty` — defensive against leaked residual classes).
@@ -571,7 +571,7 @@ This enables in-place quality-gate testing WITHOUT requiring Workspace cold-star
  1. snapshots pre-state (uses VWB.VWBridge - exists at compile + execution)
  2. runs unload body inline (kills listener; handler survives)
  3. snapshots post-unload state (Smalltalk at: #VWB returns nil; Kernel.Parcel
-    classParcelMap-VWB-keys empty; SimpleDialog override removed; .token gone)
+    classParcelMap-VWB-keys empty; SimpleDialog override removed; token file gone)
  4. runs load body inline using DYNAMIC class lookups for the start step:
         newCls := (Smalltalk at: #VWB ifAbsent: [nil])
                       ifNotNil: [:ns | ns at: #VWBridge ifAbsent: [nil]].
@@ -587,7 +587,7 @@ The UNLOAD section uses direct `VWB.VWBridge` refs — works because the class e
 
 ### Cold-start exception now uses `load.st` instead of `VWBridge.st`
 
-Per AGENTS.md cold-start exception, the FIRST file-in when bridge is dead requires VW Workspace paste (no `/eval` available). Pre-session-17 this was `VWBridge.st` (which auto-started). Post-session-17 this is `load.st` (which orchestrates the 5 file-ins + `start` + `.token` write). **Session-18 SHIPPED Phase P P5** — [`Start-VWBridge.ps1`](../src/vw-bridge/scripts/Start-VWBridge.ps1) + [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) wrap `vwnt.exe -filein <generated-chunk>` so the Workspace paste step is no longer the primary cold-start path; it lives on as the emergency fallback only.
+Per AGENTS.md cold-start exception, the FIRST file-in when bridge is dead requires VW Workspace paste (no `/eval` available). Pre-session-17 this was `VWBridge.st` (which auto-started). Post-session-17 this is `load.st` (which orchestrates the 5 file-ins + `start` + `token` write). **Session-18 SHIPPED Phase P P5** — [`Start-VWBridge.ps1`](../src/vw-bridge/scripts/Start-VWBridge.ps1) + [`Start-VWBridge.bat`](../src/vw-bridge/scripts/Start-VWBridge.bat) wrap `vwnt.exe -filein <generated-chunk>` so the Workspace paste step is no longer the primary cold-start path; it lives on as the emergency fallback only.
 
 ---
 
@@ -642,7 +642,7 @@ Generic command syntax (p35): `<oe> [oe-switches] <image-name> [image-switches]`
 
 ### Chunk-wrap design (`Start-VWBridge.ps1`)
 
-[`load.st`](../src/vw-bridge/load.st) is a do-it expression block (NOT chunk-formatted). `-filein` reads chunk-format files (chunks separated by `!`). To bridge the format gap, the wrapper writes a single-chunk wrapped file to `$VW_BRIDGE_HOME/.generated/load-startup.st`:
+[`load.st`](../src/vw-bridge/load.st) is a do-it expression block (NOT chunk-formatted). `-filein` reads chunk-format files (chunks separated by `!`). To bridge the format gap, the wrapper writes a single-chunk wrapped file to `$VW_RUNTIME_API_HOME/.generated/load-startup.st`:
 
 ```
 <load.st body bytes (4133 bytes, LF-only)>
@@ -673,14 +673,14 @@ Working directory must be the image dir (per session-9: that's where the `.cha` 
 
 The PS1 script (~260 lines) implements the 8 failure modes Oracle flagged session-17 plus 2 found session-18:
 
-1. `VW_BRIDGE_HOME` missing → resolved at Process / User / Machine env scopes; exit 2 if all empty
+1. `VW_RUNTIME_API_HOME` missing → resolved at Process / User / Machine env scopes; exit 2 if all empty
 2. `vwnt.exe` / `storedev64.im` / `load.st` missing → exit 3
 3. `load.st` contains `!` → exit 4 (preflight byte-scan)
 4. Existing `vwnt.exe` running + `-KillExisting` flag → kill cleanly, wait 2s for port 9876 to clear
 5. Already-running bridge (default) → idempotent exit 0 with `/health` echo
 6. `vwnt.exe` exits before `/health` 200 → tail err file, exit 5
 7. `/health` doesn't respond within timeout (default 90s) → exit 5
-8. `.token` doesn't rotate (load.st step 5 failed) → exit 6
+8. `token` doesn't rotate (load.st step 5 failed) → exit 6
 9. Post-launch `Smalltalk.Dialog useNativeDialogs: false` toggle via `/eval` (Bug #2 fix gate)
 10. Asymmetric Dialog getter/setter (see constraint #32) — verification uses the setter side
 
@@ -783,8 +783,8 @@ parcel addNameSpace: VWB.
 parcel addEntiretyOfClass: VWB.VWBridge.
 parcel addSelector: #choose:labels:values:default:for: class: SimpleDialog.
 parcel
-    parcelOutOn: '<VW_BRIDGE_HOME>/parcels/VWBridge.pcl' asFilename
-    withSource: '<VW_BRIDGE_HOME>/parcels/VWBridge.pst' asFilename
+    parcelOutOn: '<VW_RUNTIME_API_HOME>/parcels/VWBridge.pcl' asFilename
+    withSource: '<VW_RUNTIME_API_HOME>/parcels/VWBridge.pst' asFilename
     hideOnLoad: false
     republish: false
     backup: false.
@@ -916,7 +916,7 @@ Both modes run identical inject — no Mode-specific branch. Acceptable trade-of
 
 [`scripts/Build-Parcel.ps1`](../src/vw-bridge/scripts/Build-Parcel.ps1) drives a headless parcel build via `/eval`:
 
-1. Preflight: bridge UP + `VW_BRIDGE_HOME` + `.token` readable
+1. Preflight: bridge UP + `VW_RUNTIME_API_HOME` + `token` readable
 2. Captures git HEAD SHA + UTC timestamp **for build-context logging only** (NOT baked into parcel content)
 3. Clears prior `.generated/parcels/VWBridge.pcl` + `.pst` (so we know the build wrote fresh ones)
 4. POSTs the verbatim session-19 parcel-build pattern: `Cursor>>showWhile:` monkey-patch (carry-forward #35) + `Kernel.Parcel createParcelNamed: 'VWBridge'` + `addNameSpace: VWB` + `addEntiretyOfClass: VWB.VWBridge` + `addSelector: #choose:labels:values:default:for: class: SimpleDialog` + `parcelOutOn:withSource:hideOnLoad:republish:backup:` + `removeParcelNamed:` cleanup (constraint #38)
@@ -1184,7 +1184,7 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 
 ## Carry-forward constraints summary (one-line per item)
 
-- **Token** rotates on every `VWBridge start`; re-read from `src/vw-bridge/.token` after every reload.
+- **Token** rotates on every `VWBridge start`; re-read from `%LOCALAPPDATA%\Enviro365\vw-runtime-api\token` after every reload.
 - **Bridge file-in via Workspace** (when bridge is DOWN): `'path' asFilename fileIn.` — NOT Launcher → File Browser → File In.
 - **Bridge file-in via /eval** (when bridge is UP, v0.8.8+): PowerShell + `curl.exe` with `--data-binary @file`. Token rotates afterward — re-read.
 - **`/eval` runs on bridge serve process**, NOT UI process. `mgr activeControllerProcess` returns `nil` during modals; `onUIDo:` falls back to direct execution.
@@ -1211,7 +1211,7 @@ Maps version codes (`94 128`, `93 129`, etc.) to executable paths. Points at `D:
 - **`Namespace>>at:put:` raises `Notification` on creating a NEW binding** (session-16): adding a previously-absent key to `Root.Smalltalk` (or any Namespace) signals an unnamed `Notification` (class=`Notification`, messageText=`'Notification - '`). Reassigning an existing key does NOT raise. In Workspace, auto-resumed silently; in /eval, propagates unless caught. Test design pitfall: 3 dialog tests in [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) use `Root.Smalltalk at: #TEST_BUG2_*_RET put: 'pending'` as a cross-process fork-result channel — works once the binding exists, raises on each fresh image / namespace cleanup. Fix at gate probe level (Notification-resume) rather than test code, mirroring runCase semantics.
 - **ByteArray-aware test helpers needed for binary responses** (session-16): when test response can be ByteArray (e.g., from `httpBinaryResponse:` for /screenshot), helpers must detect `aResponse isKindOf: Core.ByteArray` and switch lookups accordingly: `indexOf: Core.Character cr` → `indexOf: 13` (Integer); `indexOfSubCollection: 'crlf-crlf' (String)` → `indexOfSubCollection: #[13 10 13 10] (ByteArray)`; `aSubstring (String)` → `aSubstring asByteArray`. `aByteArray asString` and `aString asByteArray` are both native in this image (byte ↔ codepoint by value). Production `httpBinaryResponse:` was already correct — only [`VWBridge-ScreenshotTest.st`](../src/vw-bridge/VWBridge-ScreenshotTest.st) helpers (`statusLineOf:`, `bodyOf:`, `bodyContains:in:`, `headerContains:in:`) needed the dual-mode logic. Symptom: `description: 'Got: ' , (self statusLineOf: resp)` raises `Strings only store Characters` when statusLineOf: returns the entire ByteArray (fallback path) and String,ByteArray concat copies Integer elements into Character slots.
 - **HTTP /eval inherent limit: bridge-dispatching tests fail with Bug #5 recursive_dispatch** (session-16 confirmed): 7 VWBridgeTest selectors that call `bridge dispatch:` from /eval hit the v0.8.8+ per-process re-entry guard and return HTTP 400 with `{"error":"recursive_dispatch","depth":2,"hint":...}`. These tests are designed to pass via VW Workspace (different process). The /eval gate measures hermetic + non-dispatching test correctness; **48/48 unblocked PASS + 7 known-blocked is the maximum achievable via /eval direct-invoke**. Documented in [`VWBridge-Test.st`](../src/vw-bridge/VWBridge-Test.st) L14-25 file header as `[HTTP /eval - ALL RED]`. Per-class /eval-PASS counts: WaitTest 25/25, VWBridgeTest 13/13 unblocked (10 hermetic + 3 dialog-with-Notification-resume), ScreenshotTest 10/10.
-- **`load.st` / `unload.st` external orchestrators (session-17 Stage 3)**: `VWBridge.st` no longer auto-starts. [`src/vw-bridge/load.st`](../src/vw-bridge/load.st) orchestrates env-var resolve + 5-file file-in + `VWB.VWBridge start` + `.token` write; [`src/vw-bridge/unload.st`](../src/vw-bridge/unload.st) is the inverse defensive cleanup (capture tokenPath → stop bridge → delete .token → remove SimpleDialog override → remove 4 VWB classes reverse-dep → remove empty VWB namespace). Cold-start exception now goes through `load.st` (was `VWBridge.st`). Parcel-readiness prerequisite for P6 satisfied. See [Phase P P2 Stage 3](#phase-p-p2-stage-3--loadst--unloadst-orchestrators-session-17) section.
+- **`load.st` / `unload.st` external orchestrators (session-17 Stage 3)**: `VWBridge.st` no longer auto-starts. [`src/vw-bridge/load.st`](../src/vw-bridge/load.st) orchestrates env-var resolve + 5-file file-in + `VWB.VWBridge start` + `token` write; [`src/vw-bridge/unload.st`](../src/vw-bridge/unload.st) is the inverse defensive cleanup (capture tokenPath → stop bridge → delete token file → remove SimpleDialog override → remove 4 VWB classes reverse-dep → remove empty VWB namespace). Cold-start exception now goes through `load.st` (was `VWBridge.st`). Parcel-readiness prerequisite for P6 satisfied. See [Phase P P2 Stage 3](#phase-p-p2-stage-3--loadst--unloadst-orchestrators-session-17) section.
 - **In-place unload+load+verify via single `/eval` call (session-17)**: The `/eval` handler runs on a forked process and SURVIVES listener termination — can re-create the bridge inline within the same `/eval` body. Pattern: pre-snapshot → unload body (kills listener) → post-unload snapshot → load body (use dynamic `Smalltalk at: #VWB` lookups for the start step to avoid stale compile-time bindings) → post-load snapshot → assert 6 gate predicates. Saves the Workspace cold-start round-trip for quality-gate testing. Idempotency proven via 2 consecutive cycles in session-17 (token rotated 3×, bridge survived 3 listener-recycle events without wedge).
 - **`removeSelector:` is naturally defensive on absent selector** (session-17 verified): `Object removeSelector: #absent` returns without raising; same for `SimpleDialog removeSelector: #absent`. The defensive `on: Core.Error do: [:ex | nil]` wrap is belt-and-suspenders but not strictly required for `removeSelector:`. Combined with constraints #12 (`class removeFromSystem`) + #13 (`NameSpace removeFromSystem` on empty namespace) and `tokenPath asFilename delete` defensive guard, the unload.st sequence is fully idempotent across multiple invocations.
 - **`Smalltalk.Dialog` has asymmetric setter/getter for native-dialogs flag** (session-18): setter is `useNativeDialogs:` (keyword, 1-arg) — what AGENTS.md cold-start step 3 references and what the Phase P P5 wrapper calls post-launch. Getter is `usesNativeDialogs` (unary, with an EXTRA 's' in 'uses', returns Boolean). The expected symmetric getter `useNativeDialogs` (no extra 's') does NOT exist and raises `MessageNotUnderstood` on probe. Verification probes must use the asymmetric form: `(Dialog class canUnderstand: #useNativeDialogs:)` for setter presence, `Dialog usesNativeDialogs` for current value.

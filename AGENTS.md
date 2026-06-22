@@ -1,4 +1,4 @@
-# VW Bridge Project — AI Agent Operating Rules
+# VW Runtime API Project — AI Agent Operating Rules
 
 You are working on an HTTP bridge into a live **VisualWorks 9.3.1** image (MAS / Old Mutual Wealth WEALTH deployment, `storedev64.im`). Bridge runs at `http://127.0.0.1:9876`. All work is empirical — probe before commit, real-usage verify before declaring done.
 
@@ -61,7 +61,7 @@ While bridge is up, **verify any Smalltalk syntax via `/eval` BEFORE handing to 
 After reading anchor docs:
 
 1. `curl.exe -s http://127.0.0.1:9876/health` — expect `{"status":"ok","version":"X.Y.Z"}` (current version per latest handoff)
-2. Read [`src/vw-bridge/.token`](src/vw-bridge/.token) — should match last EOD value if no vwnt.exe restart
+2. Read `%LOCALAPPDATA%\Enviro365\vw-runtime-api\token` — should match last EOD value if no vwnt.exe restart
 3. `wsl --cd /mnt/c/Users/ammaganyane/tm/tm-context git log --oneline origin/main..main` — confirm expected commits ahead
 4. `wsl ... git status --short` — confirm expected untracked files only
 5. `/eval` probe to verify bridge class identity: `VWB.VWBridge environment name` → `'VWB'`; `Smalltalk at: #VWBridge ifAbsent: [nil]` → `nil`
@@ -75,12 +75,12 @@ AI drives the recovery (do NOT punt to user paste — Phase P P5 SHIPPED session
 
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass `
-     -File "$env:VW_BRIDGE_HOME\scripts\Start-VWBridge.ps1" -KillExisting
+     -File "$env:VW_RUNTIME_API_HOME\scripts\Start-VWBridge.ps1" -KillExisting
    ```
 
-   Or invoke [`Start-VWBridge.bat`](src/vw-bridge/scripts/Start-VWBridge.bat) directly. Handles: preflight (env var + file existence + `load.st` no `!`), kill any existing vwnt.exe, generate chunk (load.st body + `\r\n!\r\n`), launch `vwnt.exe storedev64.im -filein <generated>`, poll `/health` up to 90s, verify `.token` rotated, toggle `Smalltalk.Dialog useNativeDialogs: false` via `/eval`.
-2. Re-read [`src/vw-bridge/.token`](src/vw-bridge/.token) after wrapper exits 0 (token rotates on every launch).
-3. `VW_BRIDGE_HOME` env var auto-resolved at Process / User / Machine scopes (set session-15, persistent across launches; wrapper handles fresh-terminal launches where parent process didn't inherit it).
+   Or invoke [`Start-VWBridge.bat`](src/vw-bridge/scripts/Start-VWBridge.bat) directly. Handles: preflight (env var + file existence + `load.st` no `!`), kill any existing vwnt.exe, generate chunk (load.st body + `\r\n!\r\n`), launch `vwnt.exe storedev64.im -filein <generated>`, poll `/health` up to 90s, verify `token` rotated, toggle `Smalltalk.Dialog useNativeDialogs: false` via `/eval`.
+2. Re-read `%LOCALAPPDATA%\Enviro365\vw-runtime-api\token` after wrapper exits 0 (token rotates on every launch).
+3. `VW_RUNTIME_API_HOME` env var auto-resolved at Process / User / Machine scopes (set session-15, persistent across launches; wrapper handles fresh-terminal launches where parent process didn't inherit it).
 
 Typical cycle: ~9 seconds end-to-end. Verified through 5-cycle quality gate session-18 (mean 9.11s, all green). The wrapper is idempotent without `-KillExisting`: if bridge is already up, it exits 0 silently. Drop `-KillExisting` to make the call safe to retry.
 
@@ -89,7 +89,7 @@ Typical cycle: ~9 seconds end-to-end. Verified through 5-cycle quality gate sess
 If `Start-VWBridge.ps1` fails (rare — passed 5-cycle quality gate session-18 + smoke test):
 
 1. Paste [`src/vw-bridge/load.st`](src/vw-bridge/load.st) body into VW Workspace + Do It. Smalltalk for Workspace MUST use `Core.*` qualification per `vw-image-api-contract.md` constraint #18 — load.st already does.
-2. `load.st` orchestrates: env-var resolve → 5-file file-in → `VWB.VWBridge start` → `.token` write.
+2. `load.st` orchestrates: env-var resolve → 5-file file-in → `VWB.VWBridge start` → `token` write.
 3. Re-toggle `Smalltalk.Dialog useNativeDialogs: false` via `/eval` after bridge UP (wrapper does this automatically; manual fallback requires explicit toggle).
 
 Pre-Phase P P5 (session-17 and earlier) this was the primary cold-start path. Phase P P5 (SHIPPED session-18) made it the emergency fallback only. Note the Dialog selectors are asymmetric: setter is `useNativeDialogs:` (keyword); getter is `usesNativeDialogs` (extra 's') — see `vw-image-api-contract.md` constraint #32.
@@ -109,7 +109,7 @@ curl.exe -s -X POST http://127.0.0.1:9876/eval `
 
 - Use `curl.exe` — **NEVER** PowerShell `Invoke-RestMethod` (auto-formats arrays, breaks JSON)
 - Use `--data-binary "@file"` — **NEVER** `--data "$body"` (PowerShell mangles embedded quotes)
-- Read token from [`src/vw-bridge/.token`](src/vw-bridge/.token) (rotates on `VWB.VWBridge start`)
+- Read token from `%LOCALAPPDATA%\Enviro365\vw-runtime-api\token` (rotates on `VWB.VWBridge start`)
 
 ### Long Smalltalk probes
 
