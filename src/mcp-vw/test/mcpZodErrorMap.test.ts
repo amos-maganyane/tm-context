@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import {
   mcpErrorMap,
+  applyErrorMapToSchema,
   applyErrorMapToShape,
   withMcpErrorMap,
 } from '../src/mcpZodErrorMap.js';
@@ -246,6 +247,216 @@ describe('mcpErrorMap — integration with z.object via per-schema mutation', ()
       const ours = msg.startsWith("Parameter 'count'");
       const zodsDefault = msg.toLowerCase().includes('expected') && msg.toLowerCase().includes('number');
       expect(ours || zodsDefault).toBe(true);
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------
+// applyErrorMapToSchema — recursive walker (s26 deep-walk fix)
+//
+// These tests lock the s25 documented limitation that the per-schema mutation
+// only fired for top-level fields. The walker now descends into ZodObject /
+// ZodArray / ZodUnion / ZodOptional / ZodNullable / ZodDefault / ZodEffects /
+// ZodTuple / ZodRecord / ZodLazy / ZodPipeline / etc. so a deeply-nested
+// invalid_type or invalid_enum_value gets our custom message too.
+// -----------------------------------------------------------------------------
+
+function errorMapOf(schema: unknown): z.ZodErrorMap | undefined {
+  return (schema as { _def?: { errorMap?: z.ZodErrorMap } })._def?.errorMap;
+}
+
+describe('applyErrorMapToSchema — recursive walker', () => {
+  it('attaches the map on a primitive leaf (ZodString)', () => {
+    const s = z.string();
+    applyErrorMapToSchema(s);
+    expect(errorMapOf(s)).toBe(mcpErrorMap);
+  });
+
+  it('walks into a ZodObject and attaches the map to each field', () => {
+    const inner = z.string();
+    const obj = z.object({ name: inner, count: z.number() });
+    applyErrorMapToSchema(obj);
+    expect(errorMapOf(obj)).toBe(mcpErrorMap);
+    expect(errorMapOf(inner)).toBe(mcpErrorMap);
+    // Read shape via the accessor used by the walker itself.
+    const shape = obj._def.shape();
+    expect(errorMapOf(shape['name'])).toBe(mcpErrorMap);
+    expect(errorMapOf(shape['count'])).toBe(mcpErrorMap);
+  });
+
+  it('walks into a ZodArray and attaches the map to the element schema', () => {
+    const element = z.number();
+    const arr = z.array(element);
+    applyErrorMapToSchema(arr);
+    expect(errorMapOf(arr)).toBe(mcpErrorMap);
+    expect(errorMapOf(element)).toBe(mcpErrorMap);
+  });
+
+  it('walks into ZodArray<ZodObject> - element fields get the map', () => {
+    const componentSchema = z.object({
+      type: z.enum(['Label', 'ActionButton']),
+      name: z.string(),
+    });
+    const arr = z.array(componentSchema);
+    applyErrorMapToSchema(arr);
+    expect(errorMapOf(arr)).toBe(mcpErrorMap);
+    expect(errorMapOf(componentSchema)).toBe(mcpErrorMap);
+    const innerShape = componentSchema._def.shape();
+    expect(errorMapOf(innerShape['type'])).toBe(mcpErrorMap);
+    expect(errorMapOf(innerShape['name'])).toBe(mcpErrorMap);
+  });
+
+  it('walks into a ZodUnion and attaches the map to every option', () => {
+    const opt1 = z.object({ kind: z.literal('a'), payloadA: z.string() });
+    const opt2 = z.object({ kind: z.literal('b'), payloadB: z.number() });
+    const u = z.union([opt1, opt2]);
+    applyErrorMapToSchema(u);
+    expect(errorMapOf(u)).toBe(mcpErrorMap);
+    expect(errorMapOf(opt1)).toBe(mcpErrorMap);
+    expect(errorMapOf(opt2)).toBe(mcpErrorMap);
+    expect(errorMapOf(opt1._def.shape()['payloadA'])).toBe(mcpErrorMap);
+    expect(errorMapOf(opt2._def.shape()['payloadB'])).toBe(mcpErrorMap);
+  });
+
+  it('walks into ZodOptional / Nullable / Default - innerType gets the map', () => {
+    const inner1 = z.string();
+    const inner2 = z.number();
+    const inner3 = z.boolean();
+    const opt = inner1.optional();
+    const nul = inner2.nullable();
+    const def = inner3.default(false);
+    applyErrorMapToSchema(opt);
+    applyErrorMapToSchema(nul);
+    applyErrorMapToSchema(def);
+    expect(errorMapOf(opt)).toBe(mcpErrorMap);
+    expect(errorMapOf(inner1)).toBe(mcpErrorMap);
+    expect(errorMapOf(nul)).toBe(mcpErrorMap);
+    expect(errorMapOf(inner2)).toBe(mcpErrorMap);
+    expect(errorMapOf(def)).toBe(mcpErrorMap);
+    expect(errorMapOf(inner3)).toBe(mcpErrorMap);
+  });
+
+  it('walks into ZodEffects (.refine / .transform) - schema gets the map', () => {
+    const base = z.string();
+    const refined = base.refine((s) => s.length > 0, 'non-empty');
+    applyErrorMapToSchema(refined);
+    expect(errorMapOf(refined)).toBe(mcpErrorMap);
+    expect(errorMapOf(base)).toBe(mcpErrorMap);
+  });
+
+  it('walks into ZodTuple - items and rest get the map', () => {
+    const a = z.string();
+    const b = z.number();
+    const tup = z.tuple([a, b]);
+    applyErrorMapToSchema(tup);
+    expect(errorMapOf(tup)).toBe(mcpErrorMap);
+    expect(errorMapOf(a)).toBe(mcpErrorMap);
+    expect(errorMapOf(b)).toBe(mcpErrorMap);
+  });
+
+  it('walks into ZodRecord - keyType and valueType get the map', () => {
+    const k = z.string();
+    const v = z.number();
+    const rec = z.record(k, v);
+    applyErrorMapToSchema(rec);
+    expect(errorMapOf(rec)).toBe(mcpErrorMap);
+    expect(errorMapOf(k)).toBe(mcpErrorMap);
+    expect(errorMapOf(v)).toBe(mcpErrorMap);
+  });
+
+  it('handles self-referential ZodLazy without infinite recursion', () => {
+    // Self-referential schema modeling a recursive tree:
+    //   { value: string; children: TreeNode[] }
+    type TreeNode = { value: string; children: TreeNode[] };
+    const tree: z.ZodType<TreeNode> = z.lazy(() =>
+      z.object({
+        value: z.string(),
+        children: z.array(tree),
+      })
+    );
+    // Should not blow the stack.
+    expect(() => applyErrorMapToSchema(tree)).not.toThrow();
+    expect(errorMapOf(tree)).toBe(mcpErrorMap);
+  });
+
+  it('is a no-op on non-object / non-zod input', () => {
+    expect(() => applyErrorMapToSchema(undefined)).not.toThrow();
+    expect(() => applyErrorMapToSchema(null)).not.toThrow();
+    expect(() => applyErrorMapToSchema(42)).not.toThrow();
+    expect(() => applyErrorMapToSchema('not zod')).not.toThrow();
+    expect(() => applyErrorMapToSchema({ noDefAtAll: true })).not.toThrow();
+  });
+});
+
+// -----------------------------------------------------------------------------
+// Integration: nested validation errors get the custom message after deep walk
+//
+// This is the canonical s25 limitation: a path like
+// `windowSpec.components.0.type` enum mismatch should produce our custom
+// "Parameter 'X' must be one of [...]" message instead of zod's default.
+// -----------------------------------------------------------------------------
+
+describe('applyErrorMapToShape — deep walk fixes nested errors (s25 limitation)', () => {
+  it('nested enum error on components.0.type gets the custom message', () => {
+    const shape = {
+      windowSpec: z.object({
+        components: z.array(
+          z.object({
+            type: z.enum(['Label', 'ActionButton', 'DataSet']),
+          })
+        ),
+      }),
+    };
+    applyErrorMapToShape(shape);
+    const schema = z.object(shape);
+    const result = schema.safeParse({
+      windowSpec: { components: [{ type: 'BogusWidget' }] },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const enumIssue = result.error.issues.find((i) => i.code === 'invalid_enum_value');
+      expect(enumIssue, `expected an invalid_enum_value issue: ${JSON.stringify(result.error.issues)}`).toBeDefined();
+      expect(enumIssue!.message).toBe(
+        "Parameter 'windowSpec.components.0.type' must be one of [Label, ActionButton, DataSet], but received 'BogusWidget'."
+      );
+    }
+  });
+
+  it('nested invalid_type on components.0.name (string vs number) gets custom message', () => {
+    const shape = {
+      components: z.array(
+        z.object({
+          name: z.string(),
+        })
+      ),
+    };
+    applyErrorMapToShape(shape);
+    const schema = z.object(shape);
+    const result = schema.safeParse({ components: [{ name: 42 }] });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      expect(issue.message).toBe("Parameter 'components.0.name' must be string, but received number.");
+    }
+  });
+
+  it('nested missing required (components.0.required) gets custom message', () => {
+    const shape = {
+      components: z.array(
+        z.object({
+          required: z.boolean(),
+        })
+      ),
+    };
+    applyErrorMapToShape(shape);
+    const schema = z.object(shape);
+    const result = schema.safeParse({ components: [{}] });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      const issue = result.error.issues[0];
+      expect(issue.message).toBe(
+        "Missing required parameter 'components.0.required' (expected boolean)."
+      );
     }
   });
 });
