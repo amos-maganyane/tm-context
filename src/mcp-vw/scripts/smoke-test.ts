@@ -792,6 +792,219 @@ async function main(): Promise<void> {
         });
       }
     );
+
+    // ---------------------------------------------------------------------
+    // S25 REGRESSION SMOKE TESTS — happy-path + structured-rejection probes
+    // for the 4 s23-benchmark bugs fixed in session 25. These complement
+    // the existing 16 GUARD tests and 7 happy-path tests above by locking
+    // the specific fix behaviors that surfaced live in s23/s24:
+    //   - Bug 4: vw_screenshot POST + JSON body matching bridge contract
+    //   - Bug 6+: scaffolders accept DataSet (componentTypes shared module)
+    //   - Bug 2: vw_define_aspect refuses undeclared ivar (no
+    //            ResolvedDeferredBinding singleton)
+    //   - Bug 7: vw_compile_method rejects unbalanced parens pre-bridge
+    // ---------------------------------------------------------------------
+
+    // -------------------------------------------------------------------
+    // 24. [s25-Bug4] vw_screenshot full-screen returns valid PNG ImageContent
+    // -------------------------------------------------------------------
+    await step(
+      `vw_screenshot full-screen returns valid PNG ImageContent (s25 Bug 4 happy-path)`,
+      async () => {
+        const result = await client.callTool({
+          name: 'vw_screenshot',
+          arguments: {},
+        });
+        // NOTE: cannot use the standard `assert(!result.isError, \`...${firstText(result)}\`)`
+        // here because JS evaluates the template literal EAGERLY - firstText would throw
+        // on the success path (image content has no text content[0]). Branch explicitly.
+        if (result.isError === true) {
+          throw new Error(`vw_screenshot returned isError:true: ${firstText(result)}`);
+        }
+        const r = result as {
+          content?: Array<{ type: string; data?: string; mimeType?: string }>;
+        };
+        const first = r?.content?.[0];
+        assert(
+          first?.type === 'image',
+          `expected image content type, got: ${first?.type ?? '(undefined)'}`
+        );
+        assert(
+          (first?.mimeType ?? '').startsWith('image/'),
+          `unexpected mimeType: ${first?.mimeType ?? '(undefined)'}`
+        );
+        const data = first?.data ?? '';
+        assert(
+          data.length > 100,
+          `expected non-trivial base64 image data, got ${data.length} chars`
+        );
+        // PNG magic bytes 89 50 4E 47 0D 0A 1A 0A => base64 prefix "iVBORw0KGgo"
+        assert(
+          data.startsWith('iVBORw0KGgo'),
+          `data should start with PNG base64 magic "iVBORw0KGgo", got: ${data.substring(0, 16)}`
+        );
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 25. [s25-Bug6+] vw_create_application_model accepts DataSet component
+    // (componentTypes shared module - applicationModel.ts no longer holds
+    // the stale 13-enum that pre-empted the DataSet case)
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_application_model with DataSet SmokeTestAppModelDataSet_${smokeTag} (s25 Bug 6+ happy-path)`,
+      async () => {
+        const cls = `SmokeTestAppModelDataSet_${smokeTag}`;
+        const createResult = await client.callTool({
+          name: 'vw_create_application_model',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'ApplicationModel',
+            category: 'Smoke-S25-Bug6Plus',
+            aspects: [
+              { name: 'rows', defaultExpression: 'OrderedCollection new' },
+            ],
+            windowSpec: {
+              window: {
+                label: 'DataSet AppModel Smoke',
+                bounds: [100, 100, 500, 300],
+              },
+              components: [
+                {
+                  type: 'DataSet',
+                  name: 'table',
+                  model: 'rows',
+                  columns: [
+                    { label: 'X', width: 100, readSelector: 'yourself' },
+                  ],
+                  layout: { l: 10, lf: 0, t: 10, tf: 0, r: -10, rf: 1, b: -10, bf: 1 },
+                },
+              ],
+            },
+          },
+        });
+        assert(
+          !createResult.isError,
+          `vw_create_application_model with DataSet failed (s25 Bug 6+ regression): ${firstText(createResult)}`
+        );
+        // Verify the class + aspect ivar + windowSpec all landed.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `((Smalltalk at: #${cls} ifAbsent: [nil]) notNil and: [(${cls} allInstVarNames includes: 'rows') and: [${cls} class includesSelector: #windowSpec]]) printString`,
+          },
+        });
+        assert(
+          firstText(verify).includes('true'),
+          `class + rows ivar + windowSpec should all exist; got: ${firstText(verify)}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 26. [s25-Bug2] vw_define_aspect refuses undeclared ivar with
+    // structured rejection ("available-ivars" + "ResolvedDeferredBinding"
+    // diagnostic). Without the ivar VW silently creates an image-wide
+    // singleton via ResolvedDeferredBinding literal - this guard fail-fasts.
+    // -------------------------------------------------------------------
+    await step(
+      `vw_define_aspect rejects undeclared ivar on SmokeTestDefineAspectReject_${smokeTag} (s25 Bug 2)`,
+      async () => {
+        const cls = `SmokeTestDefineAspectReject_${smokeTag}`;
+        // Setup: ApplicationModel subclass with ONE declared ivar.
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'ApplicationModel',
+            instanceVariableNames: ['declaredOnly'],
+          },
+        });
+        // Try to define an aspect whose name is NOT an ivar on the class.
+        const result = await client.callTool({
+          name: 'vw_define_aspect',
+          arguments: {
+            className: cls,
+            aspectName: 'undeclaredAspect',
+            defaultExpression: 'nil',
+          },
+        });
+        assert(
+          result.isError === true,
+          `expected isError:true for undeclared aspect ivar, got: ${JSON.stringify(result)}`
+        );
+        const text = firstText(result);
+        assert(
+          /available-ivars/i.test(text),
+          `error should include "available-ivars" diagnostic: ${text}`
+        );
+        assert(
+          /ResolvedDeferredBinding/i.test(text),
+          `error should explain the ResolvedDeferredBinding consequence: ${text}`
+        );
+        assert(
+          /declaredOnly/.test(text),
+          `error should list the declared ivar "declaredOnly" in available-ivars: ${text}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
+
+    // -------------------------------------------------------------------
+    // 27. [s25-Bug7] vw_compile_method rejects unbalanced parens BEFORE
+    // round-tripping to the bridge. VW's compiler returns a useless
+    // "array element or right parenthesis expected -> " error with no
+    // line/column; the pre-flight validator returns a structured envelope
+    // (opens-count / closes-count / delta / hint / source-tail) instead.
+    // -------------------------------------------------------------------
+    await step(
+      `vw_compile_method rejects unbalanced parens on SmokeTestParenReject_${smokeTag} (s25 Bug 7)`,
+      async () => {
+        const cls = `SmokeTestParenReject_${smokeTag}`;
+        await client.callTool({
+          name: 'vw_create_class',
+          arguments: {
+            className: cls,
+            namespace: 'Smalltalk',
+            superclass: 'Object',
+          },
+        });
+        // Source has 2 opening parens, 1 closing - delta +1 unbalanced.
+        const result = await client.callTool({
+          name: 'vw_compile_method',
+          arguments: {
+            className: cls,
+            category: 'temp',
+            source: 'foo\n    ^#(#(#{Graphics.Rectangle} 0 0 100 100)',
+          },
+        });
+        assert(
+          result.isError === true,
+          `expected isError:true for unbalanced parens, got: ${JSON.stringify(result)}`
+        );
+        const text = firstText(result);
+        assert(
+          /opens-count|closes-count|delta/i.test(text),
+          `error should include paren-balance KEY: VALUE envelope (opens-count / closes-count / delta): ${text}`
+        );
+        // Cleanup.
+        await client.callTool({
+          name: 'vw_delete_class',
+          arguments: { className: cls, confirm: true },
+        });
+      }
+    );
   } finally {
     try {
       await client.close();
