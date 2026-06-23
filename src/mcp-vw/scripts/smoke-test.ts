@@ -1005,6 +1005,107 @@ async function main(): Promise<void> {
         });
       }
     );
+
+    // -------------------------------------------------------------------
+    // 28. [s27-Bug A] vw_create_application_model with namespace=Examples.
+    //
+    // Before s27, the scaffolder emitted a bare-leaf compile receiver
+    // (`Foo compile: ...`). That works for namespace=Smalltalk because
+    // the bareword auto-resolves through the SystemDictionary, but for
+    // every other namespace the receiver evaluates to nil and step 2
+    // (the first aspect/action compile) raises MNU #compile:classified:.
+    // s23-benchmark step 1 (defineClass: 8-kw) is namespace-aware via
+    // emitCreateClassSmalltalk, so the class itself lands correctly in
+    // Examples — only the FOLLOWING compile steps fail.
+    //
+    // Fix: thread input.namespace through buildInstanceCompileExpression
+    // (applicationModel.ts) + buildCompile (dialog.ts) and emit the
+    // canonical FQN receiver `${namespace}.${className}` for every
+    // compile step (aspect / action / hook / windowSpec). The FQN form
+    // is equally correct for namespace=Smalltalk — `Smalltalk.X` resolves
+    // to the same class as bare `X` would.
+    //
+    // Memory entity: `Scaffolder-unqualified-className-receiver-bug`.
+    // Cleanup uses vw_eval directly because vw_delete_class today still
+    // calls `<className> removeFromSystem` with the bare leaf, which is
+    // brittle for non-Smalltalk namespaces (potentially a future bug).
+    // -------------------------------------------------------------------
+    await step(
+      `vw_create_application_model namespace=Examples SmokeTestNonSmalltalkNS_${smokeTag} (s27 Bug A)`,
+      async () => {
+        // Pre-flight: the Examples namespace must exist in the image,
+        // otherwise this regression test cannot exercise the bug — fail
+        // loudly so the runner knows the test was inert rather than
+        // silently masking a regression.
+        const nsCheck = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: '(Smalltalk at: #Examples ifAbsent: [nil]) notNil printString',
+          },
+        });
+        assert(
+          firstText(nsCheck).includes('true'),
+          `Examples namespace not present in image; s27 Bug A regression can't run. Got: ${firstText(nsCheck)}`
+        );
+
+        const cls = `SmokeTestNonSmalltalkNS_${smokeTag}`;
+        const createResult = await client.callTool({
+          name: 'vw_create_application_model',
+          arguments: {
+            className: cls,
+            namespace: 'Examples',
+            superclass: 'ApplicationModel',
+            category: 'Smoke-S27-BugA',
+            aspects: [{ name: 'note', defaultExpression: "''" }],
+            actions: [{ name: 'doNothing', body: '"smoke noop"' }],
+            windowSpec: {
+              window: {
+                label: 'Bug A Smoke',
+                bounds: [100, 100, 300, 150],
+              },
+              components: [
+                {
+                  type: 'Label',
+                  name: 'lbl',
+                  label: 'Hi!',
+                  layout: { l: 10, lf: 0, t: 10, tf: 0, r: -10, rf: 1, b: 30, bf: 0 },
+                },
+              ],
+            },
+          },
+        });
+        assert(
+          !createResult.isError,
+          `vw_create_application_model namespace=Examples failed (s27 Bug A regression): ${firstText(createResult)}`
+        );
+
+        // Verify Examples.${cls} + ivar + windowSpec all landed under
+        // the Examples namespace. The key bit: the ivar verification
+        // would silently pass (defineClass: works) without the fix —
+        // only the windowSpec selector check would catch the regression
+        // (it lands via compile: which is the bug). Belt + braces.
+        const verify = await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `| cls | cls := Examples at: #${cls} ifAbsent: [nil]. (cls notNil and: [(cls allInstVarNames includes: 'note') and: [cls class includesSelector: #windowSpec]]) printString`,
+          },
+        });
+        assert(
+          firstText(verify).includes('true'),
+          `Examples.${cls} + note ivar + windowSpec should all exist; got: ${firstText(verify)}`
+        );
+
+        // Cleanup via direct removeFromSystem on the FQN — vw_delete_class
+        // is bypassed because its current bare-leaf shape may not handle
+        // non-Smalltalk namespaces robustly (TBD; out of scope for s27 A).
+        await client.callTool({
+          name: 'vw_eval',
+          arguments: {
+            source: `(Examples at: #${cls} ifAbsent: [nil]) ifNotNil: [:c | c removeFromSystem]`,
+          },
+        });
+      }
+    );
   } finally {
     try {
       await client.close();
