@@ -28,6 +28,7 @@
 import { z } from 'zod';
 import type { BridgeClientLike } from '../bridge.js';
 import { text, errorResult, safeHandler, type ToolResult } from '../util.js';
+import { validateParenBalance, formatParenBalanceError } from '../smalltalk.js';
 import type { ToolDef } from './types.js';
 
 const inputSchema = {
@@ -85,6 +86,16 @@ export function makeEvalTool(bridge: BridgeClientLike): ToolDef<typeof inputSche
             '(carry-forward #41, session-20). The bridge class is off-limits for mid-/eval mutation. ' +
             'Use vw_compile_method on a MAS class instead, or restart the bridge and apply via file-in (Start-VWBridge.bat).'
         );
+      }
+
+      // Guard #3: pre-flight paren-balance check (s23 Bug 7)
+      // VW's compiler returns "Syntax error: array element or right parenthesis
+      // expected -> " on unbalanced literals with NO line/column info. Catching
+      // imbalance here avoids the bisection-only debug loop documented in the
+      // s23 benchmark report.
+      const parenCheck = validateParenBalance(source);
+      if (!parenCheck.balanced) {
+        return errorResult(formatParenBalanceError('vw_eval', source, parenCheck));
       }
 
       // All guards passed — round-trip to the bridge.
