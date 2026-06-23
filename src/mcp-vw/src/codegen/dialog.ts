@@ -22,48 +22,17 @@ import type { ToolDef } from '../tools/types.js';
 
 import { emitCreateClassSmalltalk } from './class.js';
 import { emitLazyAspectAccessor, emitActionMethod } from './methods.js';
-import { emitWindowSpecMethod, type Component, type WindowProps } from './windowSpec.js';
+import { emitWindowSpecMethod } from './windowSpec.js';
+import {
+  type Component,
+  type WindowProps,
+  windowSpecPayloadSchema,
+} from './componentTypes.js';
 
-const layoutSchema = z.object({
-  l: z.number(), lf: z.number(),
-  t: z.number(), tf: z.number(),
-  r: z.number(), rf: z.number(),
-  b: z.number(), bf: z.number(),
-});
-
-const componentSchema = z.object({
-  type: z.enum([
-    'Label', 'ActionButton', 'InputField', 'CheckBox', 'RadioButton',
-    'ComboBox', 'SequenceView', 'TableView', 'TreeView', 'TextEditor',
-    'GroupBox', 'Divider', 'SubCanvas',
-  ]),
-  name: z.string().optional(),
-  label: z.string().optional(),
-  model: z.string().optional(),
-  layout: layoutSchema,
-  isDefault: z.boolean().optional(),
-  defaultable: z.boolean().optional(),
-  numChars: z.number().optional(),
-  inputType: z.enum(['string', 'number', 'date']).optional(),
-  select: z.union([z.string(), z.number(), z.boolean()]).optional(),
-}).passthrough();
-
-const windowSchema = z.object({
-  label: z.string(),
-  bounds: z.tuple([z.number(), z.number(), z.number(), z.number()]),
-  min: z.tuple([z.number(), z.number()]).optional(),
-  max: z.tuple([z.number(), z.number()]).optional(),
-  sizeType: z.enum(['specifiedSize', 'fixedSize', 'maxScreenSize']).optional(),
-  positionType: z.enum(['screenCenter', 'mouseCenter']).optional(),
-  openType: z.enum(['advanced', 'simple']).optional(),
-  hasMenuBar: z.boolean().optional(),
-});
-
-const windowSpecSchema = z.object({
-  selector: z.string().min(1).max(200).optional(),
-  window: windowSchema,
-  components: z.array(componentSchema),
-});
+// Scaffolder-specific schemas. componentSchema + windowSchema +
+// windowSpecPayloadSchema come from componentTypes.js so the dialog
+// scaffolder accepts the same widget catalogue as vw_create_window_spec
+// (s23 Bug 6+).
 
 const aspectSchema = z.object({
   name: z.string().min(1).max(200),
@@ -87,7 +56,7 @@ const createDialogSchema = {
   category: z.string().max(200).optional(),
   aspects: z.array(aspectSchema).optional(),
   actions: z.array(actionSchema).optional(),
-  windowSpec: windowSpecSchema.optional(),
+  windowSpec: windowSpecPayloadSchema.optional(),
 };
 
 const VALID_IVAR_RE = /^[a-z_][A-Za-z0-9_]*$/;

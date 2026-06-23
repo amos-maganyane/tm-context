@@ -168,3 +168,48 @@ describe('vw_create_application_model — guards + validation', () => {
     expect(firstText(result)).toContain('compile failed: simulated');
   });
 });
+
+describe('vw_create_application_model — DataSet acceptance s23 Bug 6+ fix', () => {
+  it('accepts DataSet component in embedded windowSpec without Zod rejection', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateApplicationModelTool(bridge);
+
+    const result = await tool.handler({
+      className: 'TableViewApp',
+      namespace: 'MyApp',
+      superclass: 'ApplicationModel',
+      aspects: [{ name: 'rows', defaultExpression: 'SelectionInList with: OrderedCollection new' }],
+      windowSpec: {
+        window: { label: 'Tbl', bounds: [0, 0, 400, 300] },
+        components: [
+          {
+            type: 'DataSet',
+            name: 'tbl',
+            model: 'rows',
+            columns: [
+              { label: 'Name', width: 100, readSelector: 'yourself' },
+              { label: 'Size', width: 60, readSelector: 'size', printSelector: 'printString' },
+            ],
+            layout: { l: 0, lf: 0, t: 0, tf: 0, r: 0, rf: 1, b: 0, bf: 1 },
+          },
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    // The windowSpec compile must have emitted DataSetSpec + DataSetColumnSpec literals.
+    const wsSrc = sources.find((s) => s.includes('TableViewApp class compile:'));
+    expect(wsSrc).toBeDefined();
+    expect(wsSrc).toContain('UI.DataSetSpec');
+    expect(wsSrc).toContain('UI.DataSetColumnSpec');
+    expect(wsSrc).toContain('#readSelector: #yourself');
+    expect(wsSrc).toContain('#readSelector: #size');
+    expect(wsSrc).toContain('#printSelector: #printString');
+  });
+});

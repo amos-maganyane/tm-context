@@ -24,101 +24,26 @@ import {
   isValidClassIdentifier,
   isValidSelector,
   quoteSmalltalkString,
-  quoteSmalltalkStringBody,
 } from '../smalltalk.js';
 import type { ToolDef } from '../tools/types.js';
+import {
+  type Layout,
+  type DataSetColumn,
+  type Component,
+  type WindowProps,
+  type FullSpecInput,
+  type WindowSpecPayload,
+  componentSchema,
+  windowSchema,
+} from './componentTypes.js';
 
-// -----------------------------------------------------------------------------
-// Input shapes
-// -----------------------------------------------------------------------------
+// Re-export so existing importers (and AI agents reading tool signatures)
+// keep finding these names in one place. Anti-drift rule still applies —
+// the actual declarations live in componentTypes.ts (s23 Bug 6+ fix).
+export type { Layout, DataSetColumn, Component, WindowProps, FullSpecInput };
 
-export interface Layout {
-  l: number;
-  lf: number;
-  t: number;
-  tf: number;
-  r: number;
-  rf: number;
-  b: number;
-  bf: number;
-}
-
-/**
- * A single column within a DataSet table (s23 benchmark Bug 6).
- *
- * DataSetColumnSpec writable properties verified live against
- * `(UI.DataSetColumnSpec new respondsTo: #...)`:
- *   - label, width, readSelector, printSelector, alignment, type, menu → true
- *   - writeSelector, editable, displayWidget, showWidget → false (omitted)
- */
-export interface DataSetColumn {
-  label: string;
-  width: number;
-  readSelector: string;
-  printSelector?: string;
-  alignment?: 'left' | 'right' | 'center';
-  type?: 'string' | 'number';
-  menu?: string;
-}
-
-interface BaseComponent {
-  name?: string;
-  layout: Layout;
-}
-
-export type Component =
-  | (BaseComponent & { type: 'Label'; label: string })
-  | (BaseComponent & {
-      type: 'ActionButton';
-      label: string;
-      model: string;
-      isDefault?: boolean;
-      defaultable?: boolean;
-    })
-  | (BaseComponent & {
-      type: 'InputField';
-      model: string;
-      numChars?: number;
-      inputType?: 'string' | 'number' | 'date';
-    })
-  | (BaseComponent & { type: 'CheckBox'; label: string; model: string })
-  | (BaseComponent & { type: 'RadioButton'; label: string; model: string; select: string | number | boolean })
-  | (BaseComponent & { type: 'ComboBox'; model: string })
-  | (BaseComponent & { type: 'SequenceView'; model: string })
-  | (BaseComponent & { type: 'TableView'; model: string })
-  | (BaseComponent & { type: 'TreeView'; model: string })
-  | (BaseComponent & { type: 'TextEditor'; model: string })
-  | (BaseComponent & { type: 'GroupBox'; label?: string })
-  | (BaseComponent & { type: 'Divider' })
-  | (BaseComponent & {
-      type: 'DataSet';
-      model: string;
-      columns: DataSetColumn[];
-      multipleSelections?: boolean;
-      labelsAsButtons?: boolean;
-    })
-  | (BaseComponent & { type: 'SubCanvas'; model: string });
-
-export interface WindowProps {
-  label: string;
-  bounds: [number, number, number, number]; // [left, top, right, bottom]
-  min?: [number, number];
-  max?: [number, number];
-  sizeType?: 'specifiedSize' | 'fixedSize' | 'maxScreenSize';
-  positionType?: 'screenCenter' | 'mouseCenter';
-  openType?: 'advanced' | 'simple';
-  hasMenuBar?: boolean;
-}
-
-export interface FullSpecInput {
-  window: WindowProps;
-  components: Component[];
-}
-
-export interface WindowSpecMethodInput extends FullSpecInput {
-  /** Method selector. Defaults to 'windowSpec'. */
-  selector?: string;
-}
+/** Backwards-compat alias for the scaffolder-embedded windowSpec shape. */
+export type WindowSpecMethodInput = WindowSpecPayload;
 
 // -----------------------------------------------------------------------------
 // emitLayoutLiteral
@@ -306,72 +231,8 @@ export function emitWindowSpecMethod(input: WindowSpecMethodInput): string {
 }
 
 // -----------------------------------------------------------------------------
-// vw_create_window_spec tool
+// vw_create_window_spec tool — Zod schemas imported from componentTypes (s23 Bug 6+)
 // -----------------------------------------------------------------------------
-
-const layoutSchema = z.object({
-  l: z.number(),
-  lf: z.number(),
-  t: z.number(),
-  tf: z.number(),
-  r: z.number(),
-  rf: z.number(),
-  b: z.number(),
-  bf: z.number(),
-});
-
-const dataSetColumnSchema = z.object({
-  label: z.string(),
-  width: z.number(),
-  readSelector: z.string(),
-  printSelector: z.string().optional(),
-  alignment: z.enum(['left', 'right', 'center']).optional(),
-  type: z.enum(['string', 'number']).optional(),
-  menu: z.string().optional(),
-});
-
-const componentSchema = z.object({
-  type: z.enum([
-    'Label',
-    'ActionButton',
-    'InputField',
-    'CheckBox',
-    'RadioButton',
-    'ComboBox',
-    'SequenceView',
-    'TableView',
-    'TreeView',
-    'TextEditor',
-    'GroupBox',
-    'Divider',
-    'SubCanvas',
-    'DataSet',
-  ]),
-  name: z.string().optional(),
-  label: z.string().optional(),
-  model: z.string().optional(),
-  layout: layoutSchema,
-  isDefault: z.boolean().optional(),
-  defaultable: z.boolean().optional(),
-  numChars: z.number().optional(),
-  inputType: z.enum(['string', 'number', 'date']).optional(),
-  select: z.union([z.string(), z.number(), z.boolean()]).optional(),
-  // DataSet-specific (s23 benchmark Bug 6)
-  columns: z.array(dataSetColumnSchema).optional(),
-  multipleSelections: z.boolean().optional(),
-  labelsAsButtons: z.boolean().optional(),
-}).passthrough();
-
-const windowSchema = z.object({
-  label: z.string(),
-  bounds: z.tuple([z.number(), z.number(), z.number(), z.number()]),
-  min: z.tuple([z.number(), z.number()]).optional(),
-  max: z.tuple([z.number(), z.number()]).optional(),
-  sizeType: z.enum(['specifiedSize', 'fixedSize', 'maxScreenSize']).optional(),
-  positionType: z.enum(['screenCenter', 'mouseCenter']).optional(),
-  openType: z.enum(['advanced', 'simple']).optional(),
-  hasMenuBar: z.boolean().optional(),
-});
 
 const createWindowSpecSchema = {
   className: z
@@ -479,8 +340,6 @@ export function makeCreateWindowSpecTool(
       const compileExpression = `${input.className} class compile: ${quoteSmalltalkString(methodSource)} classified: 'interface specs'`;
       // NOTE: the methodSource may contain ' (single quote) inside string literals.
       // quoteSmalltalkString doubles them; the outer compile: string wraps the result.
-      // Manual paranoia check: ensure no unescaped apostrophes leaked.
-      void quoteSmalltalkStringBody; // suppress unused-import lint
 
       const evalResult = await bridge.postEval(compileExpression);
       if (!evalResult.ok) {
