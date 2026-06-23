@@ -79,13 +79,30 @@ const createAppModelSchema = {
 
 const VALID_IVAR_RE = /^[a-z_][A-Za-z0-9_]*$/;
 
+/**
+ * Build the canonical `<NS>.<Cls> compile: ... classified: ...` expression.
+ *
+ * s27 Bug A fix: receiver MUST be `${namespace}.${className}`, not bare
+ * `${className}`. The bare-leaf form only resolves under namespace=Smalltalk
+ * (auto-resolves via SystemDictionary lookup); for every other namespace
+ * the bareword evaluates to nil and the compile: keyword fans out into
+ * MNU #compile:classified:. The class definition step uses
+ * `Smalltalk.<NS> defineClass:` so the class lives in the right place,
+ * but the FOLLOWING compile steps (aspect/action/hook/windowSpec) need
+ * to address it via the FQN receiver. Emitting FQN for namespace=Smalltalk
+ * too keeps the emission shape consistent — `Smalltalk.Foo` resolves to the
+ * same class as bare `Foo` would. Memory entity:
+ * `Scaffolder-unqualified-className-receiver-bug`.
+ */
 function buildInstanceCompileExpression(
+  namespace: string,
   className: string,
   isMeta: boolean,
   category: string,
   methodSource: string
 ): string {
-  const receiver = isMeta ? `${className} class` : className;
+  const qualified = `${namespace}.${className}`;
+  const receiver = isMeta ? `${qualified} class` : qualified;
   return `${receiver} compile: ${quoteSmalltalkString(methodSource)} classified: ${quoteSmalltalkString(category)}`;
 }
 
@@ -187,7 +204,7 @@ export function makeCreateApplicationModelTool(
         source: emitCreateClassSmalltalk(classDefArgs),
       });
 
-      // 2. N aspect accessors
+      // 2. N aspect accessors — s27 Bug A: receiver is FQN ${namespace}.${className}.
       for (const a of aspects) {
         const accessorSrc = emitLazyAspectAccessor({
           aspectName: a.name,
@@ -198,6 +215,7 @@ export function makeCreateApplicationModelTool(
         steps.push({
           label: `aspect ${a.name}`,
           source: buildInstanceCompileExpression(
+            input.namespace,
             input.className,
             false,
             'aspects',
@@ -206,12 +224,13 @@ export function makeCreateApplicationModelTool(
         });
       }
 
-      // 3. N action methods
+      // 3. N action methods — s27 Bug A: receiver is FQN.
       for (const a of actions) {
         const actionSrc = emitActionMethod({ actionName: a.name, body: a.body });
         steps.push({
           label: `action ${a.name}`,
           source: buildInstanceCompileExpression(
+            input.namespace,
             input.className,
             false,
             'actions',
@@ -220,12 +239,13 @@ export function makeCreateApplicationModelTool(
         });
       }
 
-      // 4. K hook methods
+      // 4. K hook methods — s27 Bug A: receiver is FQN.
       for (const [selector, body] of Object.entries(hooks)) {
         const hookSrc = emitActionMethod({ actionName: selector, body });
         steps.push({
           label: `hook ${selector}`,
           source: buildInstanceCompileExpression(
+            input.namespace,
             input.className,
             false,
             'hooks',
@@ -234,7 +254,7 @@ export function makeCreateApplicationModelTool(
         });
       }
 
-      // 5. Class-side windowSpec
+      // 5. Class-side windowSpec — s27 Bug A: receiver is FQN ${NS}.${cls} class.
       if (input.windowSpec !== undefined) {
         const windowSpecArgs: Parameters<typeof emitWindowSpecMethod>[0] = {
           window: input.windowSpec.window as WindowProps,
@@ -248,6 +268,7 @@ export function makeCreateApplicationModelTool(
         steps.push({
           label: `windowSpec ${wsSelector}`,
           source: buildInstanceCompileExpression(
+            input.namespace,
             input.className,
             true,
             'interface specs',

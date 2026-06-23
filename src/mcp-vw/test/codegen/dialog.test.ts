@@ -111,3 +111,101 @@ describe('vw_create_dialog', () => {
     expect(wsSrc).toContain('#readSelector: #kind');
   });
 });
+
+// -----------------------------------------------------------------------------
+// s27 Bug A — dialog scaffolder must thread namespace into compile receiver.
+// Same root cause as the applicationModel scaffolder. See applicationModel.test.ts
+// for the full explanation. Memory entity:
+// `Scaffolder-unqualified-className-receiver-bug`.
+// -----------------------------------------------------------------------------
+describe('vw_create_dialog — namespace handling (s27 Bug A fix)', () => {
+  it('emits FQN compile receiver for namespace=Examples (the bug)', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateDialogTool(bridge);
+
+    await tool.handler({
+      className: 'D',
+      namespace: 'Examples',
+      aspects: [{ name: 'a' }],
+      actions: [{ name: 'accept', body: '^self accept' }],
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    // class def + aspect + action + windowSpec = 4 sources.
+    expect(sources.length).toBe(4);
+    const compileSteps = sources.slice(1);
+    for (const s of compileSteps) {
+      expect(s).toMatch(/Examples\.D (class )?compile:/);
+      // Negative-match: bare-leaf receiver is the bug.
+      expect(s).not.toMatch(/(?<![\w.])D (class )?compile:/);
+    }
+  });
+
+  it('threads namespace through aspect + action + windowSpec consistently', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateDialogTool(bridge);
+
+    await tool.handler({
+      className: 'Picker',
+      namespace: 'GemStoneClasses',
+      aspects: [{ name: 'sel' }],
+      actions: [{ name: 'choose', body: '^self chosen' }],
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    expect(sources.length).toBe(4);
+    const compileSteps = sources.slice(1);
+    expect(compileSteps.length).toBe(3);
+    for (const s of compileSteps) {
+      expect(s).toMatch(/GemStoneClasses\.Picker (class )?compile:/);
+    }
+    expect(compileSteps.some((s) => s.includes("classified: 'aspects'") && s.includes('sel isNil'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'actions'") && s.includes('choose'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'interface specs'") && s.includes('UI.FullSpec'))).toBe(true);
+  });
+
+  it('emits FQN receiver for namespace=Smalltalk (consistency)', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateDialogTool(bridge);
+
+    await tool.handler({
+      className: 'Plain',
+      namespace: 'Smalltalk',
+      aspects: [{ name: 'note' }],
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    expect(sources.length).toBe(3);
+    const compileSteps = sources.slice(1);
+    for (const s of compileSteps) {
+      expect(s).toMatch(/Smalltalk\.Plain (class )?compile:/);
+    }
+  });
+});

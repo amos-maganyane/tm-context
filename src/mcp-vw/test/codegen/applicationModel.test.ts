@@ -56,16 +56,19 @@ describe('vw_create_application_model — happy path', () => {
     expect(sources[0]).toContain('superclass: #{Smalltalk.ApplicationModel}');
     expect(sources[0]).toContain("instanceVariableNames: 'searchString results'");
 
-    // Aspect accessors
+    // Aspect accessors — FQN receiver (s27 Bug A fix: scaffolder must thread
+    // namespace through so non-Smalltalk namespaces work; namespace=Smalltalk
+    // also emits FQN form for consistency, and `Smalltalk.X compile:` resolves
+    // identically to bare `X compile:`).
     const aspectSrcs = sources.slice(1, 3);
-    expect(aspectSrcs.some((s) => s.includes('PartySearchView compile:') && s.includes('searchString isNil'))).toBe(true);
+    expect(aspectSrcs.some((s) => s.includes('MyAppPackage.PartySearchView compile:') && s.includes('searchString isNil'))).toBe(true);
     expect(aspectSrcs.some((s) => s.includes('results isNil') && s.includes('OrderedCollection new'))).toBe(true);
 
     // Action
     expect(sources.some((s) => s.includes('doSearch') && s.includes("classified: 'actions'"))).toBe(true);
 
-    // windowSpec (class-side)
-    expect(sources.some((s) => s.includes('PartySearchView class compile:') && s.includes('UI.FullSpec'))).toBe(true);
+    // windowSpec (class-side) — FQN receiver per s27 Bug A fix.
+    expect(sources.some((s) => s.includes('MyAppPackage.PartySearchView class compile:') && s.includes('UI.FullSpec'))).toBe(true);
   });
 
   it('omits aspects + actions + windowSpec when not provided (minimal class only)', async () => {
@@ -204,12 +207,132 @@ describe('vw_create_application_model — DataSet acceptance s23 Bug 6+ fix', ()
 
     expect(result.isError).toBeFalsy();
     // The windowSpec compile must have emitted DataSetSpec + DataSetColumnSpec literals.
-    const wsSrc = sources.find((s) => s.includes('TableViewApp class compile:'));
+    // s27 Bug A fix: receiver is FQN `MyApp.TableViewApp class`, not bare leaf.
+    const wsSrc = sources.find((s) => s.includes('MyApp.TableViewApp class compile:'));
     expect(wsSrc).toBeDefined();
     expect(wsSrc).toContain('UI.DataSetSpec');
     expect(wsSrc).toContain('UI.DataSetColumnSpec');
     expect(wsSrc).toContain('#readSelector: #yourself');
     expect(wsSrc).toContain('#readSelector: #size');
     expect(wsSrc).toContain('#printSelector: #printString');
+  });
+});
+
+// -----------------------------------------------------------------------------
+// s27 Bug A — scaffolder must thread `namespace` into the compile receiver.
+//
+// Before s27, buildInstanceCompileExpression emitted just `${className}` as the
+// receiver, regardless of the input namespace. That works for
+// namespace=Smalltalk (bareword auto-resolves via the Smalltalk
+// SystemDictionary) but FAILS for every other namespace — receiver evaluates
+// to nil and the compile: step raises MNU #compile:classified:. After the fix
+// every compile step (aspect / action / hook / windowSpec) emits the
+// fully-qualified `${namespace}.${className}` receiver, which resolves
+// correctly under any namespace AND remains correct for Smalltalk.
+//
+// Memory entity: `Scaffolder-unqualified-className-receiver-bug`.
+// -----------------------------------------------------------------------------
+describe('vw_create_application_model — namespace handling (s27 Bug A fix)', () => {
+  it('emits FQN compile receiver for namespace=Smalltalk (consistency)', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateApplicationModelTool(bridge);
+
+    await tool.handler({
+      className: 'Foo',
+      namespace: 'Smalltalk',
+      superclass: 'ApplicationModel',
+      aspects: [{ name: 'bar' }],
+      actions: [{ name: 'doIt', body: '^nil' }],
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    // class def + aspect + action + windowSpec = 4 sources
+    expect(sources.length).toBe(4);
+    // All compile steps (sources[1..]) emit FQN receiver.
+    const compileSteps = sources.slice(1);
+    for (const s of compileSteps) {
+      expect(s).toMatch(/Smalltalk\.Foo (class )?compile:/);
+    }
+  });
+
+  it('emits FQN compile receiver for namespace=Examples (the bug)', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateApplicationModelTool(bridge);
+
+    await tool.handler({
+      className: 'Foo',
+      namespace: 'Examples',
+      superclass: 'ApplicationModel',
+      aspects: [{ name: 'bar' }],
+      actions: [{ name: 'doIt', body: '^nil' }],
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    expect(sources.length).toBe(4);
+    const compileSteps = sources.slice(1);
+    for (const s of compileSteps) {
+      // s27 Bug A fix: every compile must qualify with the namespace.
+      expect(s).toMatch(/Examples\.Foo (class )?compile:/);
+      // Bug A symptom: bare-leaf `Foo compile:` would resolve to nil under
+      // Examples context → MNU at runtime. Negative-match guards regression.
+      // The lookbehind ensures we don't false-match the FQN form.
+      expect(s).not.toMatch(/(?<![\w.])Foo (class )?compile:/);
+    }
+  });
+
+  it('threads namespace through aspect + action + hook + windowSpec consistently', async () => {
+    const sources: string[] = [];
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        sources.push(s);
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeCreateApplicationModelTool(bridge);
+
+    await tool.handler({
+      className: 'View',
+      namespace: 'GemStoneClasses',
+      superclass: 'ApplicationModel',
+      aspects: [{ name: 'a1' }, { name: 'a2' }],
+      actions: [{ name: 'act1', body: '^1' }],
+      hooks: { 'postBuildWith:': 'aBuilder componentAt: #x' },
+      windowSpec: {
+        window: { label: 'x', bounds: [0, 0, 100, 100] },
+        components: [],
+      },
+    });
+
+    // class def + 2 aspects + 1 action + 1 hook + 1 windowSpec = 6 sources
+    expect(sources.length).toBe(6);
+    const compileSteps = sources.slice(1);
+    expect(compileSteps.length).toBe(5);
+    for (const s of compileSteps) {
+      expect(s).toMatch(/GemStoneClasses\.View (class )?compile:/);
+    }
+    // Sanity: each category appears.
+    expect(compileSteps.some((s) => s.includes("classified: 'aspects'") && s.includes('a1 isNil'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'aspects'") && s.includes('a2 isNil'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'actions'") && s.includes('act1'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'hooks'") && s.includes('postBuildWith:'))).toBe(true);
+    expect(compileSteps.some((s) => s.includes("classified: 'interface specs'") && s.includes('UI.FullSpec'))).toBe(true);
   });
 });

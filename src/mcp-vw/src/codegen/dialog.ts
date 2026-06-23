@@ -61,8 +61,21 @@ const createDialogSchema = {
 
 const VALID_IVAR_RE = /^[a-z_][A-Za-z0-9_]*$/;
 
-function buildCompile(className: string, isMeta: boolean, category: string, source: string): string {
-  const receiver = isMeta ? `${className} class` : className;
+/**
+ * s27 Bug A fix — emit `${namespace}.${className}` as the compile receiver,
+ * NEVER bare `${className}`. See applicationModel.ts:buildInstanceCompileExpression
+ * for the full explanation. Memory:
+ * `Scaffolder-unqualified-className-receiver-bug`.
+ */
+function buildCompile(
+  namespace: string,
+  className: string,
+  isMeta: boolean,
+  category: string,
+  source: string
+): string {
+  const qualified = `${namespace}.${className}`;
+  const receiver = isMeta ? `${qualified} class` : qualified;
   return `${receiver} compile: ${quoteSmalltalkString(source)} classified: ${quoteSmalltalkString(category)}`;
 }
 
@@ -130,7 +143,7 @@ export function makeCreateDialogTool(bridge: BridgeClientLike): ToolDef<typeof c
         });
         steps.push({
           label: `aspect ${a.name}`,
-          source: buildCompile(input.className, false, 'aspects', accessor),
+          source: buildCompile(input.namespace, input.className, false, 'aspects', accessor),
         });
       }
 
@@ -138,7 +151,7 @@ export function makeCreateDialogTool(bridge: BridgeClientLike): ToolDef<typeof c
         const actionSrc = emitActionMethod({ actionName: a.name, body: a.body });
         steps.push({
           label: `action ${a.name}`,
-          source: buildCompile(input.className, false, 'actions', actionSrc),
+          source: buildCompile(input.namespace, input.className, false, 'actions', actionSrc),
         });
       }
 
@@ -152,7 +165,7 @@ export function makeCreateDialogTool(bridge: BridgeClientLike): ToolDef<typeof c
         const wsSel = input.windowSpec.selector ?? 'windowSpec';
         steps.push({
           label: `windowSpec ${wsSel}`,
-          source: buildCompile(input.className, true, 'interface specs', wsSrc),
+          source: buildCompile(input.namespace, input.className, true, 'interface specs', wsSrc),
         });
       }
 
