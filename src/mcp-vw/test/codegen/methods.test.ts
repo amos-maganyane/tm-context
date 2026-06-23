@@ -299,6 +299,10 @@ describe('vw_define_aspect', () => {
     let lastSource: string | undefined;
     const bridge = stubBridge({
       postEval: vi.fn().mockImplementation(async (s: string) => {
+        // s23 Bug 2 fix: vw_define_aspect now probes allInstVarNames first.
+        if (s.includes('allInstVarNames')) {
+          return { ok: true, result: "'searchString;'" };
+        }
         lastSource = s;
         return { ok: true, result: 'ok' };
       }),
@@ -321,6 +325,9 @@ describe('vw_define_aspect', () => {
     let lastSource: string | undefined;
     const bridge = stubBridge({
       postEval: vi.fn().mockImplementation(async (s: string) => {
+        if (s.includes('allInstVarNames')) {
+          return { ok: true, result: "'name;'" };
+        }
         lastSource = s;
         return { ok: true, result: 'ok' };
       }),
@@ -361,5 +368,57 @@ describe('vw_define_aspect', () => {
 
     expect(result.isError).toBe(true);
     expect(bridge.postEval).not.toHaveBeenCalled();
+  });
+
+  it('rejects when aspectName is not in allInstVarNames — s23 Bug 2 fix', async () => {
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        if (s.includes('allInstVarNames')) {
+          // Class has 'declaredOnly' as its only ivar — does NOT include 'undeclared'.
+          return { ok: true, result: "'declaredOnly;'" };
+        }
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeDefineAspectTool(bridge);
+
+    const result = await tool.handler({
+      className: 'Foo',
+      aspectName: 'undeclared',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = firstText(result);
+    expect(text).toMatch(/not a declared instance variable/i);
+    expect(text).toMatch(/ResolvedDeferredBinding/i);
+    expect(text).toMatch(/declaredOnly/);
+    expect(text).toMatch(/s23 Bug 2/i);
+
+    // Probe was called exactly once. Compile was NOT called (refused before).
+    expect((bridge.postEval as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+    expect((bridge.postEval as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0]).toContain('allInstVarNames');
+  });
+
+  it('surfaces probe failure with hint about non-existent class — s23 Bug 2 fix', async () => {
+    const bridge = stubBridge({
+      postEval: vi.fn().mockImplementation(async (s: string) => {
+        if (s.includes('allInstVarNames')) {
+          // Class doesn't exist — bridge eval fails.
+          return { ok: false, error: 'Message not understood: #allInstVarNames' };
+        }
+        return { ok: true, result: 'ok' };
+      }),
+    });
+    const tool = makeDefineAspectTool(bridge);
+
+    const result = await tool.handler({
+      className: 'NonExistentClass',
+      aspectName: 'foo',
+    });
+
+    expect(result.isError).toBe(true);
+    const text = firstText(result);
+    expect(text).toMatch(/could not probe/i);
+    expect(text).toMatch(/vw_create_class/i);
   });
 });

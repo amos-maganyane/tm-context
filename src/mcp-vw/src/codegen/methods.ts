@@ -23,6 +23,9 @@ import {
   isValidClassIdentifier,
   isValidSelector,
   quoteSmalltalkString,
+  unquoteSmalltalkString,
+  validateParenBalance,
+  formatParenBalanceError,
 } from '../smalltalk.js';
 import type { ToolDef } from '../tools/types.js';
 
@@ -152,6 +155,15 @@ export function makeCompileMethodTool(
         return errorResult('vw_compile_method: source is empty.');
       }
 
+      // s23 Bug 7 fix — pre-flight paren-balance check. VW's compiler error
+      // on unbalanced literals has NO line/column ("Syntax error: array
+      // element or right parenthesis expected -> "). Catching imbalance in
+      // JS before the round-trip lets us return delta + line/column hints.
+      const parenCheck = validateParenBalance(input.source);
+      if (!parenCheck.balanced) {
+        return errorResult(formatParenBalanceError('vw_compile_method', input.source, parenCheck));
+      }
+
       const isMeta = input.isMeta ?? false;
       const expression = buildCompileExpression(input.className, isMeta, input.category, input.source);
 
@@ -277,8 +289,11 @@ export function makeDefineAspectTool(
     description:
       'NATIVE-TYPED: add an instance-side lazy-init aspect accessor to an ApplicationModel class. ' +
       "Emits the canonical pattern: `aspect ^aspect isNil ifTrue: [aspect := <default> asValue] ifFalse: [aspect]`. " +
-      "Note: assumes the instance variable already exists on the class. For full ApplicationModel scaffolding " +
-      "(class + initialize + ivs + accessors + windowSpec) use vw_create_application_model. Refuses VWB.*.",
+      "PRE-FLIGHT CHECK: probes `cls allInstVarNames` before compiling and REFUSES if the aspect name is not a declared " +
+      "instance variable on the class (own or inherited). Without the ivar, VW's compiler resolves the bareword as a " +
+      "ResolvedDeferredBinding literal — state then lives image-wide in the compiled method's literal array as a singleton " +
+      "rather than per-instance (s23 Bug 2). Add the ivar via vw_compile_class_definition first, or use " +
+      "vw_create_application_model which declares aspects as ivars in one shot. Refuses VWB.*.",
     inputSchema: defineAspectSchema,
     handler: safeHandler(async (input): Promise<ToolResult> => {
       if (!isValidClassIdentifier(input.className)) {
@@ -295,6 +310,45 @@ export function makeDefineAspectTool(
         );
       }
 
+      // -----------------------------------------------------------------------
+      // s23 Bug 2 fix — pre-flight ivar validation
+      //
+      // VW's compiler does NOT error on an undeclared bareword in a method
+      // body — it resolves the name as a ResolvedDeferredBinding literal in
+      // the CompiledMethod's literal array. The lazy-init pattern we emit
+      // then assigns into that literal, producing an image-wide singleton
+      // ValueHolder shared by every call to the accessor. AI tests with one
+      // instance see state persist (looks correct); multi-instance code
+      // silently aliases. Refuse fail-fast when the ivar is missing.
+      //
+      // `;` separator survives the bridge JSON whitespace collapse (#43);
+      // LF would be flattened to a single space.
+      // -----------------------------------------------------------------------
+      const ivarsProbe = `| ws |
+ws := WriteStream on: String new.
+${input.className} allInstVarNames do: [:each | ws nextPutAll: each; nextPutAll: ';'].
+ws contents`;
+      const ivarsResult = await bridge.postEval(ivarsProbe);
+      if (!ivarsResult.ok) {
+        return errorResult(
+          `vw_define_aspect: could not probe instance variables on ${input.className}: ${ivarsResult.error ?? '(no error)'}. ` +
+            `Class may not exist — use vw_create_class first, or check spelling.`
+        );
+      }
+      const ivars = unquoteSmalltalkString(ivarsResult.result ?? '')
+        .split(';')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+      if (!ivars.includes(input.aspectName)) {
+        const available = ivars.length > 0 ? ivars.join(', ') : '(none)';
+        return errorResult(
+          `vw_define_aspect: aspect name "${input.aspectName}" is not a declared instance variable on ${input.className}.\n` +
+            `available-ivars: [${available}]\n` +
+            `consequence: VW's compiler would resolve "${input.aspectName}" as a ResolvedDeferredBinding literal — the accessor's lazy-init slot would live image-wide in the CompiledMethod literals as a shared singleton, NOT per-instance (s23 Bug 2).\n` +
+            `fix: add the ivar via vw_compile_class_definition first, OR use vw_create_application_model which declares aspects as ivars in one shot.`
+        );
+      }
+
       const category = input.category ?? 'aspects';
       const source = emitLazyAspectAccessor({
         aspectName: input.aspectName,
@@ -305,14 +359,15 @@ export function makeDefineAspectTool(
       const evalResult = await bridge.postEval(expression);
       if (!evalResult.ok) {
         return errorResult(
-          `vw_define_aspect: VW eval failed defining ${input.className}>>${input.aspectName}: ${evalResult.error ?? '(no error)'}\n\nNote: if the instance variable "${input.aspectName}" does not exist on the class, add it first (currently a manual step; will be V3).`
+          `vw_define_aspect: VW eval failed defining ${input.className}>>${input.aspectName}: ${evalResult.error ?? '(no error)'}`
         );
       }
 
       return {
         content: [
           text(
-            `Defined ${input.className}>>${input.aspectName} (lazy aspect accessor) in category '${category}'.`
+            `Defined ${input.className}>>${input.aspectName} (lazy aspect accessor) in category '${category}'. ` +
+              `Pre-flight verified ivar exists on ${input.className} or its superclasses.`
           ),
         ],
       };
