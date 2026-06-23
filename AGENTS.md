@@ -1,6 +1,6 @@
 # VW Runtime API Project — AI Agent Operating Rules
 
-You are working on an HTTP bridge into a live **VisualWorks 9.3.1** image (MAS / Old Mutual Wealth WEALTH deployment, `storedev64.im`). Bridge runs at `http://127.0.0.1:9876`. All work is empirical — probe before commit, real-usage verify before declaring done.
+You are working on an HTTP bridge into a live **VisualWorks 9.3.1** image (MAS / Momentum Wealth deployment, `storedev64.im`). Bridge runs at `http://127.0.0.1:9876`. All work is empirical — probe before commit, real-usage verify before declaring done.
 
 This file is the **stable operating discipline**. Per-session state (current version, token, commits ahead, vwnt.exe PID) lives in the resume prompt + latest [`knowledge/HANDOFF-*.md`](knowledge/).
 

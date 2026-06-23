@@ -7,7 +7,7 @@ source_sessions: 3, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 24
 
 # VW Image API Contract — MAS `storedev64.im`
 
-This image is **NOT stock VisualWorks**. It is a heavily customized MAS (Old Mutual Wealth) deployment of VW 9.3.1 with sources stripped, conventional startup hooks absent, and several core selectors missing or renamed. Every entry below has been verified by direct `/eval` probe or external observation.
+This image is **NOT stock VisualWorks**. It is a heavily customized MAS / Momentum Wealth deployment of VW 9.3.1 with sources stripped, conventional startup hooks absent, and several core selectors missing or renamed. Every entry below has been verified by direct `/eval` probe or external observation.
 
 If a selector you assume exists isn't listed here, **probe before using it.** Probe-derived recovery is far cheaper than chasing `Message not understood` errors through fork chains.
 

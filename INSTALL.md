@@ -1,6 +1,6 @@
 # VW Bridge — Install Guide
 
-The VW Bridge is an HTTP service that exposes a live VisualWorks 9.3.1 image (MAS / Old Mutual Wealth WEALTH deployment, `storedev64.im`) at `http://127.0.0.1:9876`. External tools (test runners, AI agents, CI) drive widgets in the running image through documented endpoints (`/health`, `/version`, `/windows`, `/eval`, `/click`, `/type`, `/wait`, `/screenshot`, …).
+The VW Bridge is an HTTP service that exposes a live VisualWorks 9.3.1 image (MAS / Momentum Wealth deployment, `storedev64.im`) at `http://127.0.0.1:9876`. External tools (test runners, AI agents, CI) drive widgets in the running image through documented endpoints (`/health`, `/version`, `/windows`, `/eval`, `/click`, `/type`, `/wait`, `/screenshot`, …).
 
 This guide gets you from a freshly cloned repository to a `curl /health` response in under five minutes.
 
