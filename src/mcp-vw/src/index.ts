@@ -25,6 +25,7 @@ import process from 'node:process';
 
 import { BridgeClient } from './bridge.js';
 import { OwnerLock } from './lock.js';
+import { withMcpErrorMap } from './mcpZodErrorMap.js';
 import type { ToolDef } from './tools/types.js';
 
 // MVP tool factories (18 tools)
@@ -190,6 +191,13 @@ async function main(): Promise<void> {
     name: SERVER_NAME,
     version: SERVER_VERSION,
   });
+  // Attach the actionable zod error map to every tool's input shape
+  // before registration. Turns raw "Invalid input: expected boolean,
+  // received undefined" into "Missing required parameter 'confirm'
+  // (expected boolean)." across the entire 48-tool surface. Per-schema
+  // attachment via _zod.def.error — global z.config({ customError })
+  // would break the MCP SDK's protocol-parsing discriminated unions.
+  withMcpErrorMap(server);
   registerTools(server, tools);
 
   // -------------------------------------------------------------------------
