@@ -32,6 +32,10 @@ export function stubBridge(overrides: Partial<BridgeClientLike> = {}): BridgeCli
       bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
       contentType: 'image/png',
     }),
+    postBinary: vi.fn().mockResolvedValue({
+      bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      contentType: 'image/png',
+    }),
     ...overrides,
   };
 }

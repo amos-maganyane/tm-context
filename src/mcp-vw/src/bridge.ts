@@ -73,6 +73,7 @@ export interface BridgeClientLike {
   postEval(source: string): Promise<BridgeEvalResult>;
   postEvalRaw(source: string): Promise<string>;
   getBinary(path: string): Promise<{ bytes: Uint8Array; contentType: string }>;
+  postBinary(path: string, jsonBody: unknown): Promise<{ bytes: Uint8Array; contentType: string }>;
 }
 
 export class BridgeClient implements BridgeClientLike {
@@ -161,6 +162,49 @@ export class BridgeClient implements BridgeClientLike {
       };
     }
     throw new BridgeError(500, 'BridgeClient.getBinary retry loop fell through');
+  }
+
+  /**
+   * Auth'd POST with a JSON body that returns binary response bytes + content-type.
+   * Used by vw_screenshot — the bridge's /screenshot endpoint is POST-only and
+   * expects a JSON spec body matching parseAndValidateScreenshotRequest:'s
+   * contract (target.type, target.appClass?, target.titleContains?, format?,
+   * maxBytes?, timeoutMs?). Response on success is a raw PNG byte stream
+   * (s23 Bug 4 — vw_screenshot previously used getBinary, hitting 404 because
+   * the dispatch route table only lists /screenshot under POST).
+   */
+  async postBinary(
+    path: string,
+    jsonBody: unknown
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const token = await this.readToken();
+      const res = await this.doFetch(
+        path,
+        this.withAuth(
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(jsonBody),
+          },
+          token
+        )
+      );
+      if (res.status === 401 && attempt === 0) {
+        this.tokenCache = null;
+        continue;
+      }
+      if (!res.ok) {
+        const body = await this.safeReadText(res);
+        throw new BridgeError(res.status, body);
+      }
+      const buf = await res.arrayBuffer();
+      return {
+        bytes: new Uint8Array(buf),
+        contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+      };
+    }
+    throw new BridgeError(500, 'BridgeClient.postBinary retry loop fell through');
   }
 
   // -------------------------------------------------------------------------
